@@ -78,6 +78,7 @@ ENV db_backend=postgresql
 # meant to run via docker-compose, not standalone `docker run`.
 COPY routes.yaml /app/routes.yaml
 COPY scripts/merge_addon_routes.py /app/scripts/merge_addon_routes.py
+COPY scripts/seed_agents.py /app/scripts/seed_agents.py
 
 # ── Supervisor ───────────────────────────────────────────────────────────────
 RUN mkdir -p /var/log/supervisor

@@ -1,0 +1,28 @@
+.env
+.env.local
+# Deploy keys — never commit. Only .gitkeep and the sanitized config.example
+# template are tracked.
+.ssh/*
+!.ssh/.gitkeep
+!.ssh/config.example
+# Personal/local-only addon modules (e.g. a work-in-progress addon that
+# depends on a package not yet in requirements.txt, or a one-off local
+# experiment). Shared addon config stays a plain addons/<name>.yaml (tracked)
+# — see addons/README.md.
+addons/*.local.yaml
+addons/*.local.yml
+logs/*
+data/*
+www/*
+postgres_data/*
+postgres_logs/*
+!www/.gitkeep
+!www/logs/.gitkeep
+!www/projects/.gitkeep
+!www/hermes/.gitkeep
+!www/openclaw/.gitkeep
+*.bak
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/

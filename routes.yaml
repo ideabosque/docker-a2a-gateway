@@ -1,0 +1,27 @@
+# =============================================================================
+# SilvaEngine Gateway — Route Manifest
+# =============================================================================
+# This file is intentionally just a loader: every module — including the one
+# this image ships with (a2a_daemon_engine) — is a drop-in file under
+# ./addons/, merged into the single !include below at container startup. See
+# addons/README.md. This file itself should not need to change when modules
+# are added, removed, or edited.
+#
+# This manifest is baked into the image at /app/routes.yaml. The gateway
+# loads it via GATEWAY_ROUTES_CONFIG_PATH=/app/routes.yaml (set in the
+# Dockerfile). Override at runtime by mounting your own routes.yaml and
+# setting the path.
+#
+# handler_type: graphql | rest | sse | background | task_status | websocket
+# Paths carry only {endpoint_id}; the tenant partition id is supplied by the
+# "Part-Id" request header. The gateway builds partition_key = "{endpoint_id}#{Part-Id}".
+# =============================================================================
+
+modules:
+  # ── Modules (drop-in, see ./addons/) ───────────────────────────────────────
+  # Auto-generated at container startup by scripts/merge_addon_routes.py from
+  # every *.yaml/*.yml file in ./addons/ — currently a2a_daemon_engine (this
+  # image's core module, bridging to Hermes and/or OpenClaw), plus whatever
+  # else you drop in. This line never needs editing to add/remove/change a
+  # module.
+  - !include data/_addons_generated.yaml

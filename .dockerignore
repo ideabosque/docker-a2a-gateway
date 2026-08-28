@@ -1,0 +1,23 @@
+.git
+.gitignore
+.vscode
+README.md
+LICENSE
+Makefile
+docker-compose.yml
+pyproject.toml
+logs/*
+data/*
+www/*
+postgres_data/*
+postgres_logs/*
+*.bak
+__pycache__/
+*.pyc
+# NOTE: .ssh, requirements.txt, requirements-modules.txt, routes.yaml,
+# supervisord.conf, docker-entrypoint.sh and scripts/ are intentionally NOT
+# ignored — the build needs them. addons/ is NOT copied into the image (it's
+# bind-mounted at runtime, see docker-compose.yml) but isn't excluded here
+# either — harmless in the build context either way. The openclaw/ sibling
+# build context no longer has its own .ssh — it shares the repo-root ./.ssh
+# via a runtime bind mount instead (see docker-compose.yml).

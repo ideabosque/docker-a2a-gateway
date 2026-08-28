@@ -1,0 +1,226 @@
+# =============================================================================
+# docker-a2a-gateway
+# =============================================================================
+# A SilvaEngine Gateway image exposing ONLY the native A2A protocol surface
+# (a2a_daemon_engine), bridging A2A tasks to a Hermes Agent API Server and/or
+# an OpenClaw Gateway. Consolidates what were previously two separate images
+# (docker-a2a-hermes-agent-gateway, docker-a2a-openclaw-gateway) — the A2A
+# gateway image is identical either way; only which sibling agent(s) you
+# bundle changes.
+#
+# Four services:
+#   - a2a-gateway (always on)  — the SilvaEngine Gateway, A2A-only routes.
+#   - postgres    (optional)   — PostgreSQL persistence backend. Enabled via
+#                                the `postgres` compose profile.
+#   - hermes      (optional)   — Nous Research Hermes Agent, sibling API
+#                                server the gateway can bridge to. Enabled via
+#                                the `hermes` compose profile.
+#   - openclaw    (optional)   — OpenClaw Gateway (Node.js + Python), sibling
+#                                OpenAI-compatible API the gateway can bridge
+#                                to. Enabled via the `openclaw` compose
+#                                profile.
+#
+# `hermes` and `openclaw` are independent options: enable one, the other,
+# both, or neither (and point *_API_URL at an external instance instead).
+# Per-agent routing (agent metadata in PostgreSQL) can address either bridge
+# by agent_uuid regardless of which fallback handler A2A_AI_AGENT_MODULE /
+# A2A_AI_AGENT_CLASS select — see .env.example.
+# =============================================================================
+
+services:
+  # ── A2A Gateway (always on) ───────────────────────────────────────────────
+  a2a-gateway:
+    build: .
+    container_name: ${A2A_GATEWAY_CONTAINER_NAME:-a2a-gateway}
+    env_file:
+      - .env
+    ports:
+      # host:container — container bind port is GATEWAY_PORT
+      - "${CONTAINER_PORT:-8765}:${GATEWAY_PORT:-8765}"
+    volumes:
+      - ./logs:/var/log/supervisor
+      - ./data:/app/data
+      # Mount the routes.yaml loader over the one baked into the image. The
+      # gateway finds it via GATEWAY_ROUTES_CONFIG_PATH=/app/routes.yaml (set in
+      # the Dockerfile). Edit ./routes.yaml on the host + restart — no rebuild.
+      # To use a different manifest, change GATEWAY_ROUTES_HOST_FILE below.
+      - ${GATEWAY_ROUTES_HOST_FILE:-./routes.yaml}:/app/routes.yaml:ro
+      # Drop-in addon modules (see ./addons/README.md). routes.yaml's single
+      # `!include data/_addons_generated.yaml` line pulls in whatever the
+      # entrypoint merges from here at container start — add/edit/remove
+      # files under ./addons/ + restart, routes.yaml never needs to change.
+      - ${ADDONS_HOST_DIR:-./addons}:/app/addons:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      # PostgreSQL connection defaults for a2a_daemon_engine. db_backend is
+      # forced to "postgresql" in the Dockerfile (no DynamoDB option). These
+      # default to the bundled 'postgres' service; .env overrides any of them
+      # (e.g. PG_HOST=host.docker.internal for an external Postgres).
+      - PG_HOST=${PG_HOST:-postgres}
+      - PG_PORT=${PG_PORT:-5432}
+      - PG_USER=${PG_USER:-silvaengine}
+      - PG_PASSWORD=${PG_PASSWORD:-silvaengine}
+      - PG_DB=${PG_DB:-silvaengine}
+      - initialize_tables=${initialize_tables:-1}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+      hermes:
+        condition: service_healthy
+        required: false
+      openclaw:
+        condition: service_started
+        required: false
+    restart: unless-stopped
+    healthcheck:
+      # /health is public (no auth) — see silvaengine_gateway routes.
+      test: ["CMD", "curl", "-f", "http://localhost:${GATEWAY_PORT:-8765}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    command: ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+
+  # ── Optional bundled PostgreSQL (enable with the `postgres` profile) ──────
+  # PostgreSQL is the sole persistence backend for a2a_daemon_engine
+  # (db_backend=postgresql is forced in the image — no DynamoDB option).
+  # This service is OPTIONAL: enable its profile and keep PG_HOST=postgres;
+  # or leave the profile off and point PG_* at an external PostgreSQL in
+  # .env. Tables + RLS tenant-isolation policies are auto-created on gateway
+  # startup when initialize_tables=1.
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-17-alpine}
+    container_name: ${POSTGRES_CONTAINER_NAME:-a2a-postgres}
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-silvaengine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-silvaengine}
+      POSTGRES_DB: ${POSTGRES_DB:-silvaengine}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ${POSTGRES_DATA_PATH:-./postgres_data}:/var/lib/postgresql/data
+      - ${POSTGRES_LOG_PATH:-./postgres_logs}:/var/log/postgresql
+    command:
+      - "postgres"
+      - "-c"
+      - "logging_collector=on"
+      - "-c"
+      - "log_directory=/var/log/postgresql"
+      - "-c"
+      - "log_filename=postgresql-%Y-%m-%d.log"
+      - "-c"
+      - "log_statement=${LOG_STATEMENT:-none}"
+      - "-c"
+      - "log_min_duration_statement=${LOG_MIN_DURATION:-1000}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-silvaengine} -d ${POSTGRES_DB:-silvaengine}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Option A: Hermes Agent (optional sibling — enable with the `hermes` profile)
+  # Nous Research Hermes Agent running its OpenAI-compatible API server, which
+  # the A2A gateway bridges to over HTTP + SSE. Configuration mirrors
+  # ../docker-hermes-agent/. The gateway reaches it at http://hermes:8642 when
+  # this profile is active (set HERMES_API_URL=http://hermes:8642 in .env).
+  hermes:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent}:${HERMES_TAG:-latest}
+    container_name: ${HERMES_CONTAINER_NAME:-container-hermes}
+    profiles: ["hermes"]
+    restart: unless-stopped
+    command: ${HERMES_COMMAND:-gateway run}
+    env_file:
+      - .env
+    ports:
+      # Gateway OpenAI-compatible API server + health endpoint.
+      # HERMES_GATEWAY_PORT = host port; API_SERVER_PORT = in-container port.
+      - "${HERMES_GATEWAY_PORT:-8642}:${API_SERVER_PORT:-8642}"
+      # Web dashboard (only reachable when HERMES_DASHBOARD=1).
+      - "${HERMES_DASHBOARD_PORT:-9119}:${HERMES_DASHBOARD_PORT:-9119}"
+    environment:
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+      HERMES_DASHBOARD: ${HERMES_DASHBOARD:-1}
+      HERMES_DASHBOARD_HOST: ${HERMES_DASHBOARD_HOST:-0.0.0.0}
+      HERMES_DASHBOARD_PORT: ${HERMES_DASHBOARD_PORT:-9119}
+      HERMES_DASHBOARD_BASIC_AUTH_USERNAME: ${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-}
+      HERMES_DASHBOARD_BASIC_AUTH_PASSWORD: ${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-}
+      HERMES_DASHBOARD_BASIC_AUTH_SECRET: ${HERMES_DASHBOARD_BASIC_AUTH_SECRET:-}
+      API_SERVER_ENABLED: ${API_SERVER_ENABLED:-true}
+      API_SERVER_HOST: ${API_SERVER_HOST:-0.0.0.0}
+      API_SERVER_PORT: ${API_SERVER_PORT:-8642}
+      API_SERVER_KEY: ${API_SERVER_KEY:-}
+      API_SERVER_CORS_ORIGINS: ${API_SERVER_CORS_ORIGINS:-*}
+      HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:-anthropic}
+      HERMES_MODEL: ${HERMES_MODEL:-claude-opus-4-8}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      NOUS_API_KEY: ${NOUS_API_KEY:-}
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-https://ollama.com/v1}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+    volumes:
+      - "${HERMES_DATA_FOLDER:-./www/hermes}:/opt/data"
+      - "${PROJECTS_FOLDER:-./www/projects}:/opt/projects"
+      - "${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock"
+    shm_size: ${HERMES_SHM_SIZE:-1g}
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          memory: ${HERMES_MEMORY_LIMIT:-4G}
+          cpus: "${HERMES_CPU_LIMIT:-2.0}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:${API_SERVER_PORT:-8642}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Option B: OpenClaw Gateway (optional sibling — enable with the `openclaw` profile)
+  # OpenClaw running its OpenAI-compatible gateway, which the A2A gateway
+  # bridges to over HTTP + SSE. Modeled on ../docker-openclaw/. The gateway
+  # reaches it at http://openclaw:18789 when this profile is active (set
+  # OPENCLAW_API_URL=http://openclaw:18789 in .env).
+  openclaw:
+    build:
+      context: ./openclaw
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple/}
+        PYTHON: ${PYTHON:-python3.12}
+        NODE_VERSION: ${NODE_VERSION:-22}
+    container_name: ${OPENCLAW_CONTAINER_NAME:-container-openclaw}
+    profiles: ["openclaw"]
+    env_file:
+      - .env
+    ports:
+      - "${OPENCLAW_PORT:-18789}:18789"
+    volumes:
+      - ./www:/var/www
+      - ${PROJECTS_FOLDER:-./www/projects}:/var/www/projects
+      - ${OPENCLAW_FOLDER:-./www/openclaw}:/root/.openclaw
+      # Same deploy key as the main gateway image (see "Private repos over
+      # SSH" in README) — mounted read-only at runtime, never baked into
+      # this image. Mounted at a staging path, not /root/.ssh directly: the
+      # entrypoint copies it into a normal writable ~/.ssh and fixes
+      # permissions before OpenClaw starts (a read-only mount can't be
+      # chmod'd in place, and OpenSSH refuses group/world-readable key
+      # files — a real risk with Windows-host bind mounts).
+      - ${SSH_HOST_DIR:-./.ssh}:/root/.ssh-src:ro
+    environment:
+      - OLLAMA_HOST=${OLLAMA_HOST:-https://ollama.com}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+    restart: unless-stopped
+
+# A single default bridge network lets the gateway reach the `hermes` /
+# `openclaw` services by name (http://hermes:8642, http://openclaw:18789)
+# when their respective profiles are active.

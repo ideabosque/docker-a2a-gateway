@@ -1,0 +1,165 @@
+FROM almalinux/10-base
+
+# Set build arguments
+ARG PIP_INDEX_URL
+ARG PYTHON=python3.12
+ARG NODE_VERSION=22
+
+ENV PIP_INDEX_URL=${PIP_INDEX_URL}
+ENV PYTHON=${PYTHON}
+ENV NODE_VERSION=${NODE_VERSION}
+
+# Base OS packages
+RUN dnf -y upgrade && \
+    dnf -y install epel-release && \
+    dnf -y install \
+        supervisor \
+        git \
+        gcc \
+        gcc-c++ \
+        zip \
+        unzip \
+        openssh-server \
+        wget \
+        tar \
+        make \
+        openssl-devel \
+        bzip2-devel \
+        libffi-devel \
+        libxml2-devel \
+        libxslt-devel \
+        freetype-devel \
+        python3 \
+        python3-pip \
+        python3-devel && \
+    dnf clean all && \
+    rm -rf /var/cache/dnf
+
+# Install Node.js
+RUN curl -fsSL https://rpm.nodesource.com/setup_${NODE_VERSION}.x | bash - && \
+    dnf -y install nodejs && \
+    dnf clean all
+
+# Install Homebrew
+RUN useradd -m -s /bin/bash linuxbrew && \
+    git clone https://github.com/Homebrew/brew /home/linuxbrew/.linuxbrew/Homebrew && \
+    mkdir -p /home/linuxbrew/.linuxbrew/bin && \
+    ln -s /home/linuxbrew/.linuxbrew/Homebrew/bin/brew /home/linuxbrew/.linuxbrew/bin/brew && \
+    chown -R linuxbrew: /home/linuxbrew/.linuxbrew
+ENV PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+
+# Install pnpm and openclaw globally
+ENV PNPM_HOME="/root/.local/share/pnpm"
+ENV PATH="$PNPM_HOME:$PNPM_HOME/bin:$PATH"
+RUN npm install -g pnpm@latest && \
+    mkdir -p $PNPM_HOME && \
+    pnpm config set global-bin-dir "$PNPM_HOME" && \
+    pnpm add -g openclaw@latest && \
+    pnpm add -g opencode-ai@latest
+
+# Stage OpenClaw bundled plugin runtime deps in a system-global location
+# (outside /root/.openclaw, which is volume-mounted and would shadow build-time installs).
+ENV OPENCLAW_PLUGIN_STAGE_DIR=/usr/local/lib/plugin-runtime-deps
+ENV NODE_PATH=/usr/local/lib/plugin-runtime-deps/node_modules
+RUN mkdir -p "$OPENCLAW_PLUGIN_STAGE_DIR" && \
+    cd "$OPENCLAW_PLUGIN_STAGE_DIR" && \
+    echo '{"name":"openclaw-plugin-deps","version":"1.0.0","private":true}' > package.json && \
+    npm install --save --legacy-peer-deps --no-audit --no-fund \
+        "@anthropic-ai/sdk" \
+        "@aws-sdk/client-bedrock@3.1024.0" \
+        "@aws-sdk/client-s3@3.1024.0" \
+        "@aws-sdk/s3-request-presigner@3.1024.0" \
+        "@aws/bedrock-token-generator@^1.1.0" \
+        "@buape/carbon@0.14.0" \
+        "@clawdbot/lobster@2026.1.24" \
+        "@discordjs/opus@^0.10.0" \
+        "@discordjs/voice@^0.19.2" \
+        "@google/genai@^1.48.0" \
+        "@grammyjs/runner@^2.0.3" \
+        "@grammyjs/transformer-throttler@^1.2.1" \
+        "@lancedb/lancedb@^0.27.2" \
+        "@larksuiteoapi/node-sdk@^1.60.0" \
+        "@matrix-org/matrix-sdk-crypto-nodejs@^0.4.0" \
+        "@matrix-org/matrix-sdk-crypto-wasm@18.0.0" \
+        "@microsoft/teams.api@2.0.6" \
+        "@microsoft/teams.apps@2.0.6" \
+        "@opentelemetry/api@^1.9.1" \
+        "@opentelemetry/api-logs@^0.214.0" \
+        "@opentelemetry/exporter-logs-otlp-proto@^0.214.0" \
+        "@opentelemetry/exporter-metrics-otlp-proto@^0.214.0" \
+        "@opentelemetry/exporter-trace-otlp-proto@^0.214.0" \
+        "@opentelemetry/resources@^2.6.1" \
+        "@opentelemetry/sdk-logs@^0.214.0" \
+        "@opentelemetry/sdk-metrics@^2.6.1" \
+        "@opentelemetry/sdk-node@^0.214.0" \
+        "@opentelemetry/sdk-trace-base@^2.6.1" \
+        "@opentelemetry/semantic-conventions@^1.40.0" \
+        "@pierre/diffs@1.1.10" \
+        "@pierre/theme@0.0.29" \
+        "@sinclair/typebox@0.34.49" \
+        "@slack/bolt@^4.6.0" \
+        "@slack/web-api@^7.15.0" \
+        "@snazzah/davey@^0.1.11" \
+        "@tloncorp/tlon-skill@0.3.2" \
+        "@twurple/api@^8.1.3" \
+        "@twurple/auth@^8.1.3" \
+        "@twurple/chat@^8.1.3" \
+        "@urbit/aura@^3.0.0" \
+        "@whiskeysockets/baileys@7.0.0-rc.9" \
+        "acpx@0.5.2" \
+        "ajv@^8.18.0" \
+        "commander@^14.0.3" \
+        "discord-api-types@^0.38.44" \
+        "express@^5.2.1" \
+        "fake-indexeddb@^6.2.5" \
+        "google-auth-library@^10.6.2" \
+        "grammy@^1.42.0" \
+        "https-proxy-agent@^9.0.0" \
+        "jimp@^1.6.0" \
+        "markdown-it@14.1.1" \
+        "matrix-js-sdk@41.3.0-rc.0" \
+        "mpg123-decoder@^1.0.3" \
+        "music-metadata@^11.12.3" \
+        "node-edge-tts@^1.2.10" \
+        "nostr-tools@^2.23.3" \
+        "openai@^6.33.0" \
+        "opusscript@^0.1.1" \
+        "playwright-core@1.59.1" \
+        "silk-wasm@^3.7.1" \
+        "undici@8.0.2" \
+        "ws@^8.20.0" \
+        "yaml@^2.8.3" \
+        "zca-js@2.1.2" \
+        "zod@^4.3.6"
+
+# SSH — no deploy key is baked into this image (this Dockerfile never clones
+# over git+ssh at build time). The repo-root ./.ssh deploy key is instead
+# bind-mounted read-only at /root/.ssh-src at container start (see
+# docker-compose.yml) and copied into a normal ~/.ssh by
+# docker-entrypoint.sh, so OpenClaw's runtime git operations share the same
+# key as the main gateway image without it ever landing in an image layer.
+# known_hosts goes in the system-wide file (unaffected by that mount/copy).
+RUN ssh-keyscan github.com >> /etc/ssh/ssh_known_hosts
+
+# Supervisor config for OpenClaw
+ADD openclaw.ini /etc/supervisord.d/openclaw.ini
+RUN chmod 755 /etc/supervisord.d/openclaw.ini
+
+COPY requirements.txt /tmp/requirements.txt
+
+RUN $PYTHON -m venv /var/$PYTHON/openclaw/env && \
+    source /var/$PYTHON/openclaw/env/bin/activate && \
+    pip install --upgrade pip -i "$PIP_INDEX_URL" && \
+    pip install -r /tmp/requirements.txt -i "$PIP_INDEX_URL"
+
+WORKDIR /var/www/projects
+
+# Entrypoint copies the bind-mounted deploy key into a proper ~/.ssh (see the
+# SSH comment above), then execs whatever CMD/compose `command:` says. This
+# is the ONLY place that decides how the container starts — do not add a
+# `command:` override in docker-compose.yml, or it silently bypasses this.
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["supervisord", "-n"]

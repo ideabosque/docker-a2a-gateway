@@ -1,0 +1,16 @@
+# Copy-paste template for a new addon module. Rename to `<name>.yaml` to
+# activate it (this file's .disabled suffix means it's ignored by
+# scripts/merge_addon_routes.py). See ./README.md for the full explanation.
+
+name: my_engine
+package: my_engine
+transport: graphql               # graphql | rest | hybrid
+config_class: "my_engine.handlers.config:Config"
+config_init_style: dict          # "dict" -> Config.initialize(logger, setting)
+                                  # "kwargs" -> Config.initialize(logger, **setting)
+routes:
+  - path: "/{endpoint_id}/my_engine_graphql"
+    handler_type: graphql        # graphql | rest | background | task_status | sse | websocket
+    dispatch: "my_engine.main:dispatch_graphql"
+    methods: ["POST"]
+    auth: true

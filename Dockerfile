@@ -79,6 +79,7 @@ ENV db_backend=postgresql
 COPY routes.yaml /app/routes.yaml
 COPY scripts/merge_addon_routes.py /app/scripts/merge_addon_routes.py
 COPY scripts/seed_agents.py /app/scripts/seed_agents.py
+COPY scripts/generate_env.py /app/scripts/generate_env.py
 
 # ── Supervisor ───────────────────────────────────────────────────────────────
 RUN mkdir -p /var/log/supervisor

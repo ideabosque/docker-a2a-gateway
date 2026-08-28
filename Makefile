@@ -1,5 +1,5 @@
 .PHONY: build up down logs gateway-logs status restart shell health clean rebuild dev \
-        hermes-up hermes-down openclaw-up openclaw-down postgres-up postgres-down
+        hermes-up hermes-down openclaw-up openclaw-down postgres-up postgres-down init
 
 # Overridable from the environment, e.g.
 #   A2A_GATEWAY_CONTAINER_NAME=my-gateway make shell
@@ -7,6 +7,13 @@
 # Note: make does NOT read .env — export the variable if you changed it there.
 A2A_GATEWAY_CONTAINER_NAME ?= a2a-gateway
 CONTAINER_PORT             ?= 8765
+
+# Generate a fresh .env with random tokens from .env.example.
+# Pass LLM credentials via args:
+#   make init OPENAI_COMPAT_API_KEY=ollama-... OPENAI_COMPAT_MODEL=glm-5.2
+# Or set them in .env afterwards.
+init:
+	python scripts/generate_env.py --force $(if $(OPENAI_COMPAT_API_KEY),--openai-compat-api-key $(OPENAI_COMPAT_API_KEY)) $(if $(OPENAI_COMPAT_BASE_URL),--openai-compat-base-url $(OPENAI_COMPAT_BASE_URL)) $(if $(OPENAI_COMPAT_MODEL),--openai-compat-model $(OPENAI_COMPAT_MODEL))
 
 # Build the Docker image
 build:

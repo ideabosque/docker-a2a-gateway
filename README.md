@@ -616,21 +616,28 @@ Required only when `GATEWAY_WORKERS > 1`.
 | `LOG_STATEMENT` | `none` | `none` \| `ddl` \| `mod` \| `all` |
 | `LOG_MIN_DURATION` | `1000` | Log queries slower than N ms (`-1` disables) |
 
-### A2A bridge — fallback handler selection
+### A2A bridge — fallback handler selection and agent seeding
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `A2A_AI_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_hermes_handler` | Handler module (fallback when the agent record has no metadata) |
-| `A2A_AI_AGENT_CLASS` | `HermesAgentHandler` | Handler class — swap to `a2a_daemon_engine.handlers.a2a_openclaw_handler` / `OpenClawAgentHandler` to make OpenClaw the default |
-| `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none |
+| `A2A_AI_AGENT_CLASS` | `HermesAgentHandler` | Handler class — swap to `OpenClawAgentHandler` to make OpenClaw the default |
+| `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none (env-var fallback for Config) |
+| `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
+| `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
+| `A2A_HERMES_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_hermes_handler` | Hermes handler module (for seeder) |
+| `A2A_HERMES_AGENT_CLASS` | `HermesAgentHandler` | Hermes handler class (for seeder) |
+| `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent UUID (seeded into `a2a_agents`) |
+| `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
+| `A2A_OPENCLAW_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_openclaw_handler` | OpenClaw handler module (for seeder) |
+| `A2A_OPENCLAW_AGENT_CLASS` | `OpenClawAgentHandler` | OpenClaw handler class (for seeder) |
 | `A2A_STREAM_TIMEOUT` | `120.0` | A2A-side stream timeout, seconds |
 | `A2A_STREAMING_ENABLED` | `true` | Enable streaming via SSE |
 
-Config resolution priority (per-agent): **agent metadata (DB) > setting dict >
-Config class (env vars above)**. The env-var defaults let the bridge reach one
-backend **without** a DB agent record — see
-[Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side)
-to address both.
+Config resolution priority (per-agent): **agent metadata (DB, seeded on
+startup) > setting dict > Config class (env vars above)**. Both agent records
+are auto-seeded — see
+[Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side).
 
 ### Hermes bridge (a2a_daemon_engine)
 
@@ -733,22 +740,34 @@ for reference fragments per engine (KGE, RFQ, MCP, AI agent core, ...).
 
 ## 🔀 Running Hermes and OpenClaw side by side
 
-`A2A_AI_AGENT_MODULE` / `A2A_AI_AGENT_CLASS` / `A2A_DEFAULT_AGENT_UUID` only
-set the **fallback** handler — used when an A2A request's `agent_uuid` has no
-matching record in `a2a_agents`. To address Hermes and OpenClaw
-**simultaneously**, register a second agent record via
-`POST /{ep}/a2a_core_graphql` with its own `agent_uuid` and handler metadata,
-then route requests by targeting either `agent_uuid` in
-`metadata.agent_uuid`. For example, with `hermes,openclaw` both bundled:
+Both agent bridges are auto-seeded into the `a2a_agents` database table on
+container startup by `scripts/seed_agents.py` (a supervisor program that runs
+once after the gateway is healthy). The seeder reads the agent UUID, name,
+module, and class from `.env`:
 
-- `agent_uuid: a2a-hermes-agent` → handled by `HermesAgentHandler` (the env
-  default, if `A2A_AI_AGENT_CLASS=HermesAgentHandler`)
-- `agent_uuid: a2a-openclaw-agent` → needs a DB record pointing at
-  `a2a_daemon_engine.handlers.a2a_openclaw_handler.OpenClawAgentHandler`
-  (since the env fallback only covers one default)
+| Var | Default | Purpose |
+|---|---|---|
+| `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent record UUID |
+| `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
+| `A2A_HERMES_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_hermes_handler` | Handler module |
+| `A2A_HERMES_AGENT_CLASS` | `HermesAgentHandler` | Handler class |
+| `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent record UUID |
+| `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
+| `A2A_OPENCLAW_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_openclaw_handler` | Handler module |
+| `A2A_OPENCLAW_AGENT_CLASS` | `OpenClawAgentHandler` | Handler class |
 
-See `silvaengine_gateway`'s A2A GraphQL schema for the exact mutation shape to
-create an agent record (`a2aAgent` / equivalent create mutation).
+The seeder uses the `insertUpdateA2aAgent` GraphQL mutation (upsert), so it's
+safe to run on every container start — existing records are updated, not
+duplicated. `A2A_AI_AGENT_MODULE` / `A2A_AI_AGENT_CLASS` /
+`A2A_DEFAULT_AGENT_UUID` remain as the env-var fallback for
+`a2a_daemon_engine`'s Config (used when no DB record matches).
+
+With `hermes,openclaw` both bundled, requests route by `agent_uuid`:
+
+- `agent_uuid: a2a-hermes-agent` → `HermesAgentHandler`
+- `agent_uuid: a2a-openclaw-agent` → `OpenClawAgentHandler`
+
+No manual GraphQL mutation is needed — both records exist after `docker compose up -d`.
 
 ---
 

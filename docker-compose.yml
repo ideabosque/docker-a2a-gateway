@@ -89,14 +89,20 @@ services:
   # or leave the profile off and point PG_* at an external PostgreSQL in
   # .env. Tables + RLS tenant-isolation policies are auto-created on gateway
   # startup when initialize_tables=1.
+  #
+  # Bootstrap credentials come straight from PG_USER/PG_PASSWORD/PG_DB (the
+  # same vars the gateway uses to connect) — the postgres image itself still
+  # needs env vars literally named POSTGRES_USER/PASSWORD/DB, but there is no
+  # separate POSTGRES_* value to keep in sync in .env; one set of credentials
+  # drives both sides.
   postgres:
     image: postgres:${POSTGRES_VERSION:-17-alpine}
     container_name: ${POSTGRES_CONTAINER_NAME:-a2a-postgres}
     profiles: ["postgres"]
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-silvaengine}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-silvaengine}
-      POSTGRES_DB: ${POSTGRES_DB:-silvaengine}
+      POSTGRES_USER: ${PG_USER:-silvaengine}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-silvaengine}
+      POSTGRES_DB: ${PG_DB:-silvaengine}
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
@@ -117,7 +123,7 @@ services:
       - "log_min_duration_statement=${LOG_MIN_DURATION:-1000}"
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-silvaengine} -d ${POSTGRES_DB:-silvaengine}"]
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-silvaengine} -d ${PG_DB:-silvaengine}"]
       interval: 10s
       timeout: 5s
       retries: 5

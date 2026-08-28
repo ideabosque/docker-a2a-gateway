@@ -603,14 +603,14 @@ Required only when `GATEWAY_WORKERS > 1`.
 
 ### Bundled PostgreSQL sibling (profile `postgres`)
 
-`POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` must match
-`PG_USER` / `PG_PASSWORD` / `PG_DB` above.
+No separate credentials here — the bundled service bootstraps itself
+directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
+`docker-compose.yml`), so there's nothing to keep in sync.
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `POSTGRES_VERSION` | `17-alpine` | Image tag |
 | `POSTGRES_CONTAINER_NAME` | `a2a-postgres` | Container name |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `silvaengine` ×3 | Bootstrap credentials |
 | `POSTGRES_PORT` | `5432` | Published host port |
 | `POSTGRES_DATA_PATH` / `POSTGRES_LOG_PATH` | `./postgres_data` / `./postgres_logs` | Host bind mounts |
 | `LOG_STATEMENT` | `none` | `none` \| `ddl` \| `mod` \| `all` |
@@ -1140,8 +1140,9 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 ## 🔒 Security notes
 
 - **Change the defaults.** `JWT_SECRET_KEY=change-me-in-production`,
-  `ADMIN_PASSWORD=change-me`, and `POSTGRES_PASSWORD=silvaengine` in
-  `.env.example` are placeholders, not secrets.
+  `ADMIN_PASSWORD=change-me`, and `PG_PASSWORD=silvaengine` (also the
+  bundled Postgres bootstrap password) in `.env.example` are placeholders,
+  not secrets.
 - **`.env` is gitignored**; `.env.example` is committed. Never put real values
   in the template.
 - **`.ssh/` is gitignored** except `.gitkeep` and `config.example` — never

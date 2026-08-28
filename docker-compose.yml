@@ -132,7 +132,41 @@ services:
     container_name: ${HERMES_CONTAINER_NAME:-container-hermes}
     profiles: ["hermes"]
     restart: unless-stopped
-    command: ${HERMES_COMMAND:-gateway run}
+    # Wrap the Hermes entrypoint: apply .env model/provider settings to
+    # config.yaml (idempotent — safe on every start), then run the gateway.
+    # This makes Hermes fully .env-driven on first start, like OpenClaw.
+    # HERMES_MODEL_PROVIDER maps to Hermes's own provider names:
+    #   openai_compat / openai / ollama / custom → "custom" (OpenAI-compatible endpoint)
+    #   anthropic                               → "anthropic"
+    #   openrouter                              → "openrouter"
+    #   nous                                     → "nous"
+    # $$ escapes $$ for compose, so $PROVIDER etc. are resolved by the
+    # container's shell, not by docker-compose interpolation.
+    command: >
+      sh -c '
+        PROVIDER="$${HERMES_MODEL_PROVIDER:-anthropic}";
+        case "$$PROVIDER" in
+          openai|openai_compat|ollama|custom)
+            hermes config set model.provider custom 2>/dev/null;
+            hermes config set model.base_url "$${OPENAI_BASE_URL}" 2>/dev/null;
+            hermes config set model.api_key "$${OPENAI_API_KEY}" 2>/dev/null
+            ;;
+          anthropic)
+            hermes config set model.provider anthropic 2>/dev/null;
+            hermes config set model.api_key "$${ANTHROPIC_API_KEY}" 2>/dev/null
+            ;;
+          openrouter)
+            hermes config set model.provider openrouter 2>/dev/null;
+            hermes config set model.api_key "$${OPENROUTER_API_KEY}" 2>/dev/null
+            ;;
+          nous)
+            hermes config set model.provider nous 2>/dev/null;
+            hermes config set model.api_key "$${NOUS_API_KEY}" 2>/dev/null
+            ;;
+        esac;
+        hermes config set model.default "$${HERMES_MODEL:-hermes-agent}" 2>/dev/null;
+        exec /opt/hermes/docker/entrypoint-dispatch.sh gateway run
+      '
     env_file:
       - .env
     ports:

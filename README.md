@@ -321,15 +321,25 @@ If bundling **Hermes** (`hermes` in `COMPOSE_PROFILES`), also set:
 |---|---|
 | `API_SERVER_KEY` | A random string for the bundled Hermes (e.g. `openssl rand -hex 32`) |
 | `HERMES_API_KEY` | **Must equal** `API_SERVER_KEY` (Hermes API server token) |
-| `HERMES_MODEL_PROVIDER` + a provider key | e.g. `anthropic` + `ANTHROPIC_API_KEY`, or `custom` + `OLLAMA_API_KEY` for Ollama Cloud |
+| `HERMES_MODEL_PROVIDER` + a provider key | e.g. `anthropic` + `ANTHROPIC_API_KEY`, `openai` + `OPENAI_COMPAT_*` for any OpenAI-compatible endpoint, or `ollama` + `OLLAMA_API_KEY` for Ollama Cloud |
 | `HERMES_MODEL` | The model id Hermes should use (see the note on this var's dual role in `.env.example`) |
 
 If bundling **OpenClaw** (`openclaw` in `COMPOSE_PROFILES`), also set:
 
 | Variable | What to set |
 |---|---|
-| `OPENCLAW_API_KEY` | Bearer token — must match `gateway.auth.token` in OpenClaw's own config (see "OpenClaw post-start setup" below) |
-| `OLLAMA_API_KEY` | OpenClaw uses Ollama Cloud for model serving |
+| `OPENCLAW_MODEL_PROVIDER` | Provider for first-start auto-config: `openai_compat` (generic OpenAI-compatible), `anthropic`, `openai`, `openrouter`, `gemini`, `mistral`, `moonshot`, `ollama`, `custom`, or empty for manual setup |
+| Provider API key | The matching key for your `OPENCLAW_MODEL_PROVIDER` (e.g. `ANTHROPIC_API_KEY`, or `OPENAI_COMPAT_API_KEY` for `openai_compat`) |
+| `OPENCLAW_MODEL` | Optional — pins the default model id (e.g. `anthropic/claude-opus-4-8`) |
+| `OPENCLAW_GATEWAY_TOKEN` | Optional — pre-set the gateway auth token so no post-start copy is needed; set `OPENCLAW_API_KEY` to the same value |
+| `OPENCLAW_API_KEY` | Bearer token — must match `gateway.auth.token` in OpenClaw's own config (see [Step 6](#step-6--openclaw-setup) below) |
+| `OLLAMA_API_KEY` | Ollama Cloud key (used when `OPENCLAW_MODEL_PROVIDER=ollama`) |
+
+**Shared OpenAI-compatible endpoint** — to point both agents at the same
+OpenAI-compatible inference provider (vLLM, Groq, Together AI, Ollama Cloud, LM
+Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
+`OPENAI_COMPAT_MODEL` once in `.env`, then use `HERMES_MODEL_PROVIDER=openai`
+(Hermes) and `OPENCLAW_MODEL_PROVIDER=openai_compat` (OpenClaw). See `.env.example` for details.
 
 `COMPOSE_PROFILES` is the single switch for all three siblings
 (comma-separated):
@@ -420,7 +430,58 @@ make gateway-logs            # tail the gateway process log (supervisor)
 make status                  # supervisor process status
 ```
 
-### Step 6 — OpenClaw post-start setup (OpenClaw only)
+### Step 6 — OpenClaw setup
+
+#### Option A — `.env`-driven first-start auto-config (recommended)
+
+Set these in `.env` **before** `make openclaw-up` so the entrypoint configures
+OpenClaw's model provider and default model automatically on first start:
+
+```bash
+# .env
+COMPOSE_PROFILES=openclaw
+OPENCLAW_MODEL_PROVIDER=anthropic          # or openai, gemini, mistral, moonshot, ollama, custom
+ANTHROPIC_API_KEY=sk-ant-...                # the key for your chosen provider
+OPENCLAW_MODEL=anthropic/claude-opus-4-8   # optional — pins the default model
+# Pre-set the gateway token so no post-start copy is needed:
+OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
+OPENCLAW_API_KEY=<same value as OPENCLAW_GATEWAY_TOKEN>
+```
+
+The entrypoint runs `openclaw onboard --non-interactive` on first start (when
+`openclaw.json` does not yet exist) and prints the generated gateway auth token
+to stdout. If you set `OPENCLAW_GATEWAY_TOKEN`, that value is used and no
+post-start copy is needed. On subsequent starts the existing `openclaw.json` is
+left untouched.
+
+Supported `OPENCLAW_MODEL_PROVIDER` values and their key vars:
+
+| Provider | Key var(s) | Notes |
+|---|---|---|
+| `openai_compat` | `OPENAI_COMPAT_*` | Generic OpenAI-compatible endpoint (shared with Hermes) |
+| `anthropic` | `ANTHROPIC_API_KEY` | |
+| `openai` | `OPENAI_API_KEY` | Codex plugin is preinstalled automatically |
+| `openrouter` | `OPENROUTER_API_KEY` | Configured as a custom OpenAI-compatible provider |
+| `gemini` | `GEMINI_API_KEY` | |
+| `mistral` | `MISTRAL_API_KEY` | |
+| `moonshot` | `MOONSHOT_API_KEY` | |
+| `ollama` | `OLLAMA_HOST` / `OLLAMA_API_KEY` | `OPENCLAW_MODEL` sets the model id |
+| `custom` | `OPENCLAW_CUSTOM_*` | See `.env.example` for all `OPENCLAW_CUSTOM_*` vars |
+
+Leave `OPENCLAW_MODEL_PROVIDER` empty to skip auto-config and configure OpenClaw
+manually (Option B below).
+
+#### Option B — manual post-start setup
+
+If you prefer to configure OpenClaw interactively, leave
+`OPENCLAW_MODEL_PROVIDER` empty in `.env` and use the OpenClaw CLI after first
+start:
+
+```bash
+docker exec -it container-openclaw openclaw onboard
+# or for targeted changes:
+docker exec -it container-openclaw openclaw configure --section model
+```
 
 OpenClaw generates its own gateway auth token on first start. Read it and copy
 it into `OPENCLAW_API_KEY`:
@@ -591,8 +652,9 @@ to address both.
 | `API_SERVER_HOST` / `API_SERVER_PORT` | `0.0.0.0` / `8642` | API server bind |
 | `API_SERVER_KEY` | — | API server bearer token (**= `HERMES_API_KEY`**) |
 | `API_SERVER_CORS_ORIGINS` | `*` | CORS allow-list |
-| `HERMES_MODEL_PROVIDER` | `anthropic` | Selects which provider key is used |
+| `HERMES_MODEL_PROVIDER` | `anthropic` | Selects which provider key is used; set to `openai` for any OpenAI-compatible endpoint via `OPENAI_COMPAT_*` |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OPENROUTER_API_KEY` / `NOUS_API_KEY` | — | Provider keys |
+| `OPENAI_BASE_URL` | — | Custom OpenAI-compatible base URL (when `HERMES_MODEL_PROVIDER=openai`); auto-mapped from `OPENAI_COMPAT_BASE_URL` if set |
 | `HERMES_DASHBOARD` | `1` | Enable the web dashboard |
 | `HERMES_DASHBOARD_HOST` / `HERMES_DASHBOARD_PORT` | `0.0.0.0` / `9119` | Dashboard bind |
 | `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `_PASSWORD` / `_SECRET` | — | Dashboard basic auth (**set these if the port is reachable**) |
@@ -623,6 +685,11 @@ to address both.
 | `OPENCLAW_FOLDER` | `./www/openclaw` | Host bind mount for config/agents/sessions |
 | `SSH_HOST_DIR` | `./.ssh` | Deploy key mounted into the container at runtime (same key the main gateway build uses) — see [Private repos over SSH](#-private-repos-over-ssh) |
 | `OLLAMA_HOST` / `OLLAMA_API_KEY` | `https://ollama.com` / — | Ollama Cloud, used by OpenClaw for model serving |
+| `OPENCLAW_MODEL_PROVIDER` | — | First-start auto-config provider: `openai_compat` (generic), `anthropic`, `openai`, `openrouter`, `gemini`, `mistral`, `moonshot`, `ollama`, `custom`, or empty for manual setup |
+| `OPENCLAW_MODEL` | — | Default model id (e.g. `anthropic/claude-opus-4-8`); pins via `openclaw models set` after onboarding |
+| `OPENCLAW_GATEWAY_TOKEN` | — | Pre-set the gateway auth token; set `OPENCLAW_API_KEY` to the same value to skip the post-start copy |
+| `OPENCLAW_CUSTOM_BASE_URL` / `_API_KEY` / `_MODEL_ID` / `_PROVIDER_ID` / `_COMPATIBILITY` | — | Custom provider config (used when `OPENCLAW_MODEL_PROVIDER=custom`) |
+| `GEMINI_API_KEY` / `MISTRAL_API_KEY` / `MOONSHOT_API_KEY` | — | Additional provider keys (shared with Hermes where applicable) |
 
 ### Shared
 
@@ -630,6 +697,7 @@ to address both.
 |---|---|---|
 | `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into whichever bridge(s) are bundled |
 | `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | — | Ollama Cloud, shared between Hermes (`OLLAMA_BASE_URL`) and OpenClaw (`OLLAMA_HOST`) |
+| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`) and OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`) |
 
 ### Scaling (`GATEWAY_WORKERS > 1`)
 
@@ -1117,7 +1185,7 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | `401 Unauthorized` | Get a fresh token via `POST /auth/token` (they expire after `ACCESS_TOKEN_EXP` minutes); check `JWT_SECRET_KEY` / Cognito settings. |
 | Auth works in test scripts but not curl | The scripts fall back to a minted JWT from `JWT_SECRET_KEY`; your curl token may just be expired. |
 | A2A tasks hang or error (Hermes) | Confirm Hermes is reachable from the gateway (`HERMES_API_URL`) and `API_SERVER_KEY` matches `HERMES_API_KEY` exactly — including no trailing inline comment. |
-| A2A tasks hang or error (OpenClaw) | Confirm OpenClaw is reachable (`OPENCLAW_API_URL`) and `OPENCLAW_API_KEY` matches its `gateway.auth.token` — see "OpenClaw post-start setup". |
+| A2A tasks hang or error (OpenClaw) | Confirm OpenClaw is reachable (`OPENCLAW_API_URL`) and `OPENCLAW_API_KEY` matches its `gateway.auth.token` — see [Step 6](#step-6--openclaw-setup). |
 | Hermes/OpenClaw auth fails for no visible reason | An inline `#` comment in `.env` was absorbed into the value. Put comments on their own line. |
 | SSE connects but no chunks arrive | Send with `"stream": true`, connect the listener *before* sending, and check `A2A_STREAMING_ENABLED=true`. |
 | `tasks/get` says "Task not found" | Verify the task exists: `SELECT * FROM a2a_tasks WHERE task_id='...'` in the `postgres` container. If not, rebuild with `--no-cache` to pick up an upstream fix. |

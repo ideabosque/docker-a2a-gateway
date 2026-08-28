@@ -140,7 +140,8 @@ services:
       # HERMES_GATEWAY_PORT = host port; API_SERVER_PORT = in-container port.
       - "${HERMES_GATEWAY_PORT:-8642}:${API_SERVER_PORT:-8642}"
       # Web dashboard (only reachable when HERMES_DASHBOARD=1).
-      - "${HERMES_DASHBOARD_PORT:-9119}:${HERMES_DASHBOARD_PORT:-9119}"
+      # HERMES_DASHBOARD_HOST_PORT = host port; HERMES_DASHBOARD_PORT = in-container port.
+      - "${HERMES_DASHBOARD_HOST_PORT:-${HERMES_DASHBOARD_PORT:-9119}}:${HERMES_DASHBOARD_PORT:-9119}"
     environment:
       HERMES_UID: ${HERMES_UID:-1000}
       HERMES_GID: ${HERMES_GID:-1000}
@@ -158,7 +159,11 @@ services:
       HERMES_MODEL_PROVIDER: ${HERMES_MODEL_PROVIDER:-anthropic}
       HERMES_MODEL: ${HERMES_MODEL:-claude-opus-4-8}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # OPENAI_COMPAT_* vars (if set) take priority over OPENAI_API_KEY /
+      # OPENAI_BASE_URL — set HERMES_MODEL_PROVIDER=openai to use a generic
+      # OpenAI-compatible endpoint with these shared vars.
+      OPENAI_API_KEY: ${OPENAI_COMPAT_API_KEY:-${OPENAI_API_KEY:-}}
+      OPENAI_BASE_URL: ${OPENAI_COMPAT_BASE_URL:-${OPENAI_BASE_URL:-}}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       NOUS_API_KEY: ${NOUS_API_KEY:-}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
@@ -219,6 +224,25 @@ services:
     environment:
       - OLLAMA_HOST=${OLLAMA_HOST:-https://ollama.com}
       - OLLAMA_API_KEY=${OLLAMA_API_KEY:-}
+      # First-start model/provider auto-config (see .env.example):
+      - OPENCLAW_MODEL_PROVIDER=${OPENCLAW_MODEL_PROVIDER:-}
+      - OPENCLAW_MODEL=${OPENCLAW_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - MISTRAL_API_KEY=${MISTRAL_API_KEY:-}
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      - OPENCLAW_CUSTOM_BASE_URL=${OPENCLAW_CUSTOM_BASE_URL:-}
+      - OPENCLAW_CUSTOM_API_KEY=${OPENCLAW_CUSTOM_API_KEY:-}
+      - OPENCLAW_CUSTOM_MODEL_ID=${OPENCLAW_CUSTOM_MODEL_ID:-}
+      - OPENCLAW_CUSTOM_PROVIDER_ID=${OPENCLAW_CUSTOM_PROVIDER_ID:-}
+      - OPENCLAW_CUSTOM_COMPATIBILITY=${OPENCLAW_CUSTOM_COMPATIBILITY:-openai}
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+      # Shared generic OpenAI-compatible endpoint (see .env.example):
+      - OPENAI_COMPAT_BASE_URL=${OPENAI_COMPAT_BASE_URL:-}
+      - OPENAI_COMPAT_API_KEY=${OPENAI_COMPAT_API_KEY:-}
+      - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
     restart: unless-stopped
 
 # A single default bridge network lets the gateway reach the `hermes` /

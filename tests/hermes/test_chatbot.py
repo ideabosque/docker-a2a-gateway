@@ -23,8 +23,7 @@ Prerequisites:
     - The stack is up:   docker compose --profile postgres --profile hermes up -d
     - Gateway on http://127.0.0.1:8765 (CONTAINER_PORT) and Hermes on 8642.
     - A hermes agent registered OR the env-var fallbacks in .env set:
-        A2A_AI_AGENT_MODULE=a2a_daemon_engine.handlers.a2a_hermes_handler
-        A2A_AI_AGENT_CLASS=HermesAgentHandler
+        A2A_AI_AGENT_TYPE=hermes
         A2A_DEFAULT_AGENT_UUID=a2a-hermes-agent
         HERMES_API_URL / HERMES_API_KEY
 

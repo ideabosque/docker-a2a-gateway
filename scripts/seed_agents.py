@@ -5,11 +5,11 @@ Runs after the gateway is healthy. Idempotent — uses insertUpdateA2aAgent
 (upsert), so it's safe to run on every container start.
 
 Registers:
-  - a2a-hermes-agent  → HermesAgentHandler
-  - a2a-openclaw-agent → OpenClawAgentHandler
+  - a2a-hermes-agent  → agent_type: "hermes"
+  - a2a-openclaw-agent → agent_type: "openclaw"
 
-Both with metadata containing module_name / class_name so the A2A executor
-routes by agent_uuid without relying on env-var fallbacks.
+Both with metadata containing agent_type so the A2A executor resolves
+the handler via AGENT_TYPE_MAP without relying on env-var fallbacks.
 """
 import json
 import os
@@ -46,6 +46,7 @@ AGENTS = [
         "agentId": os.environ.get("A2A_HERMES_AGENT_UUID", "a2a-hermes-agent"),
         "agentName": os.environ.get("A2A_HERMES_AGENT_NAME", "Hermes Agent"),
         "metadata": {
+            "agent_type": os.environ.get("A2A_HERMES_AGENT_TYPE", "hermes"),
             "module_name": os.environ.get("A2A_HERMES_AGENT_MODULE", "a2a_daemon_engine.handlers.a2a_hermes_handler"),
             "class_name": os.environ.get("A2A_HERMES_AGENT_CLASS", "HermesAgentHandler"),
         },
@@ -54,6 +55,7 @@ AGENTS = [
         "agentId": os.environ.get("A2A_OPENCLAW_AGENT_UUID", "a2a-openclaw-agent"),
         "agentName": os.environ.get("A2A_OPENCLAW_AGENT_NAME", "OpenClaw Agent"),
         "metadata": {
+            "agent_type": os.environ.get("A2A_OPENCLAW_AGENT_TYPE", "openclaw"),
             "module_name": os.environ.get("A2A_OPENCLAW_AGENT_MODULE", "a2a_daemon_engine.handlers.a2a_openclaw_handler"),
             "class_name": os.environ.get("A2A_OPENCLAW_AGENT_CLASS", "OpenClawAgentHandler"),
         },

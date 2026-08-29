@@ -24,8 +24,7 @@ Prerequisites:
     - The stack is up:   docker compose --profile postgres --profile openclaw up -d
     - Gateway on http://127.0.0.1:8765 (CONTAINER_PORT) and OpenClaw on 18789.
     - An openclaw agent registered OR the env-var fallbacks in .env set:
-        A2A_AI_AGENT_MODULE=a2a_daemon_engine.handlers.a2a_openclaw_handler
-        A2A_AI_AGENT_CLASS=OpenClawAgentHandler
+        A2A_AI_AGENT_TYPE=openclaw
         A2A_DEFAULT_AGENT_UUID=a2a-openclaw-agent
         OPENCLAW_API_URL / OPENCLAW_API_KEY
 

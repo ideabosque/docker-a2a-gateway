@@ -22,9 +22,8 @@
 #
 # `hermes` and `openclaw` are independent options: enable one, the other,
 # both, or neither (and point *_API_URL at an external instance instead).
-# Per-agent routing (agent metadata in PostgreSQL) can address either bridge
-# by agent_uuid regardless of which fallback handler A2A_AI_AGENT_MODULE /
-# A2A_AI_AGENT_CLASS select — see .env.example.
+# Per-agent routing uses agent metadata in PostgreSQL: each bridge is reached
+# by its own agent_uuid (seeded by scripts/seed_agents.py). See .env.example.
 # =============================================================================
 
 services:

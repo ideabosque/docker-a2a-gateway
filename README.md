@@ -621,8 +621,6 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | Variable | Default | Purpose |
 |---|---|---|
 | `A2A_AI_AGENT_TYPE` | — | Handler shorthand: `hermes`, `core_engine`, `openclaw`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
-| `A2A_AI_AGENT_MODULE` | — | Handler module (explicit fallback for custom handlers not in the type map) |
-| `A2A_AI_AGENT_CLASS` | — | Handler class (explicit fallback for custom handlers not in the type map) |
 | `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none (env-var fallback for Config) |
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |

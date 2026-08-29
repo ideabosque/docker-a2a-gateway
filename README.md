@@ -625,13 +625,9 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
 | `A2A_HERMES_AGENT_TYPE` | `hermes` | Hermes agent type shorthand (maps to handler via `AGENT_TYPE_MAP`) |
-| `A2A_HERMES_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_hermes_handler` | Hermes handler module (for seeder, used when `agent_type` isn't supported) |
-| `A2A_HERMES_AGENT_CLASS` | `HermesAgentHandler` | Hermes handler class (for seeder) |
 | `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent UUID (seeded into `a2a_agents`) |
 | `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
 | `A2A_OPENCLAW_AGENT_TYPE` | `openclaw` | OpenClaw agent type shorthand |
-| `A2A_OPENCLAW_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_openclaw_handler` | OpenClaw handler module (for seeder) |
-| `A2A_OPENCLAW_AGENT_CLASS` | `OpenClawAgentHandler` | OpenClaw handler class (for seeder) |
 | `A2A_STREAM_TIMEOUT` | `120.0` | A2A-side stream timeout, seconds |
 | `A2A_STREAMING_ENABLED` | `true` | Enable streaming via SSE |
 
@@ -765,20 +761,14 @@ and type from `.env`:
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent record UUID |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
 | `A2A_HERMES_AGENT_TYPE` | `hermes` | Agent type shorthand (maps to handler via `AGENT_TYPE_MAP`) |
-| `A2A_HERMES_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_hermes_handler` | Handler module (fallback when `agent_type` isn't supported) |
-| `A2A_HERMES_AGENT_CLASS` | `HermesAgentHandler` | Handler class (fallback) |
 | `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent record UUID |
 | `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
 | `A2A_OPENCLAW_AGENT_TYPE` | `openclaw` | Agent type shorthand |
-| `A2A_OPENCLAW_AGENT_MODULE` | `a2a_daemon_engine.handlers.a2a_openclaw_handler` | Handler module (fallback) |
-| `A2A_OPENCLAW_AGENT_CLASS` | `OpenClawAgentHandler` | Handler class (fallback) |
 
 The seeder uses the `insertUpdateA2aAgent` GraphQL mutation (upsert), so it's
 safe to run on every container start — existing records are updated, not
-duplicated. The seeder stores both `agent_type` (shorthand) and
-`module_name`/`class_name` (explicit) in metadata, so handler resolution
-works regardless of whether the installed `a2a_daemon_engine` version
-supports `agent_type` or only the explicit module/class fields.
+duplicated. The seeder stores `agent_type` in metadata, so handler
+resolution works via `AGENT_TYPE_MAP` without explicit module/class fields.
 `A2A_AI_AGENT_TYPE` / `A2A_DEFAULT_AGENT_UUID` remain as the env-var
 fallback for `a2a_daemon_engine`'s Config (used when no DB record matches).
 

@@ -280,7 +280,8 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
                          task_type: str = "a2a_test",
                          stream: bool = True,
                          system_prompt: Optional[str] = None,
-                         conversation_history: Optional[list] = None) -> Dict[str, Any]:
+                         conversation_history: Optional[list] = None,
+                         thread_uuid: Optional[str] = None) -> Dict[str, Any]:
     """Build params for A2A message/send."""
     metadata: Dict[str, Any] = {
         "operation": "task_execution",
@@ -292,6 +293,8 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
         metadata["system_prompt"] = system_prompt
     if conversation_history:
         metadata["conversation_history"] = conversation_history
+    if thread_uuid:
+        metadata["thread_uuid"] = thread_uuid
     return {
         "message": {"role": "ROLE_USER", "parts": [{"text": text}]},
         "metadata": metadata,

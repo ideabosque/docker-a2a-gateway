@@ -47,8 +47,6 @@ AGENTS = [
         "agentName": os.environ.get("A2A_HERMES_AGENT_NAME", "Hermes Agent"),
         "metadata": {
             "agent_type": os.environ.get("A2A_HERMES_AGENT_TYPE", "hermes"),
-            "module_name": os.environ.get("A2A_HERMES_AGENT_MODULE", "a2a_daemon_engine.handlers.a2a_hermes_handler"),
-            "class_name": os.environ.get("A2A_HERMES_AGENT_CLASS", "HermesAgentHandler"),
         },
     },
     {
@@ -56,8 +54,6 @@ AGENTS = [
         "agentName": os.environ.get("A2A_OPENCLAW_AGENT_NAME", "OpenClaw Agent"),
         "metadata": {
             "agent_type": os.environ.get("A2A_OPENCLAW_AGENT_TYPE", "openclaw"),
-            "module_name": os.environ.get("A2A_OPENCLAW_AGENT_MODULE", "a2a_daemon_engine.handlers.a2a_openclaw_handler"),
-            "class_name": os.environ.get("A2A_OPENCLAW_AGENT_CLASS", "OpenClawAgentHandler"),
         },
     },
 ]

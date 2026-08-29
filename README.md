@@ -648,6 +648,20 @@ are auto-seeded — see
 | `HERMES_MODEL` | `hermes-agent` | Model id passed to Hermes (dual role — see `.env.example`) |
 | `HERMES_STREAM_TIMEOUT` | `300` | Hermes SSE stream timeout, seconds |
 
+### Core Engine gateway bridge (a2a_daemon_engine)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CORE_ENGINE_GRAPHQL_URL` | `http://localhost:8765` | Gateway GraphQL base URL for `ai_agent_core_engine` |
+| `CORE_ENGINE_WS_URL` | `ws://localhost:8765` | Gateway WebSocket base URL for streaming |
+| `CORE_ENGINE_TOKEN` | — | JWT token for gateway auth |
+| `CORE_ENGINE_AGENT_UUID` | *(auto-mapped from `DEFAULT_AGENT_UUID`)* | `ai_agent_core_engine` agent UUID |
+| `CORE_ENGINE_UPDATED_BY` | `a2a-daemon` | Audit user for core engine requests |
+| `CORE_ENGINE_STREAM_TIMEOUT` | `120` | WebSocket stream timeout, seconds |
+
+> This image does not bundle `ai_agent_core_engine`. Point the `CORE_ENGINE_*`
+> vars at a running gateway + core engine instance to use this bridge.
+
 ### Bundled Hermes sibling (profile `hermes`)
 
 | Variable | Default | Purpose |

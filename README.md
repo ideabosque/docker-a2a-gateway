@@ -973,8 +973,9 @@ at module load without declaring it as a dependency.
 `requirements-modules.txt` then installs `silvaengine_gateway` and
 `a2a_daemon_engine` with `--no-deps`, also over git+ssh, because their
 metadata declares sibling engines by bare name (`knowledge_graph_engine`,
-`rfq_engine`, `mcp-daemon-engine`, `ai_coordination_engine`) that are not on
-PyPI and are intentionally absent from this A2A-only image.
+`rfq_engine`, `silvaengine-daemon`, `mcp-protocol-plugin`,
+`ai_coordination_engine`) that are not on PyPI and are intentionally absent
+from this A2A-only image.
 
 ---
 

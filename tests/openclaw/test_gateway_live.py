@@ -244,7 +244,7 @@ def test_08_cancel(cfg):
     # but the OpenClaw run keeps going.  Known non-fatal errors:
     #   - "Task not found"        — message/send doesn't register in the
     #                              SDK's ActiveTaskRegistry (in-memory store).
-    #   - "'dict' object has no   — upstream a2a_daemon_engine cancel path
+    #   - "'dict' object has no   — upstream a2a_protocol_plugin cancel path
     #     attribute 'status'"       receives a dict (PG row) instead of a Task
     #                              object; a known limitation for the
     #                              PostgreSQL-only deployment.

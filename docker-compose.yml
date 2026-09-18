@@ -2,7 +2,7 @@
 # docker-a2a-gateway
 # =============================================================================
 # A SilvaEngine Gateway image exposing ONLY the native A2A protocol surface
-# (a2a_daemon_engine), bridging A2A tasks to a Hermes Agent API Server and/or
+# (a2a_protocol_plugin), bridging A2A tasks to a Hermes Agent API Server and/or
 # an OpenClaw Gateway. Consolidates what were previously two separate images
 # (docker-a2a-hermes-agent-gateway, docker-a2a-openclaw-gateway) — the A2A
 # gateway image is identical either way; only which sibling agent(s) you
@@ -51,7 +51,7 @@ services:
       - ${ADDONS_HOST_DIR:-./addons}:/app/addons:ro
     environment:
       - PYTHONUNBUFFERED=1
-      # PostgreSQL connection defaults for a2a_daemon_engine. db_backend is
+      # PostgreSQL connection defaults for a2a_protocol_plugin. db_backend is
       # forced to "postgresql" in the Dockerfile (no DynamoDB option). These
       # default to the bundled 'postgres' service; .env overrides any of them
       # (e.g. PG_HOST=host.docker.internal for an external Postgres).
@@ -82,7 +82,7 @@ services:
     command: ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
 
   # ── Optional bundled PostgreSQL (enable with the `postgres` profile) ──────
-  # PostgreSQL is the sole persistence backend for a2a_daemon_engine
+  # PostgreSQL is the sole persistence backend for a2a_protocol_plugin
   # (db_backend=postgresql is forced in the image — no DynamoDB option).
   # This service is OPTIONAL: enable its profile and keep PG_HOST=postgres;
   # or leave the profile off and point PG_* at an external PostgreSQL in

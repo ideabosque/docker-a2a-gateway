@@ -2,13 +2,14 @@
 # docker-a2a-gateway — image
 # =============================================================================
 # A slim Python 3.12 image that runs the SilvaEngine Gateway with ONLY the
-# a2a_daemon_engine module registered, exposing the native A2A protocol
+# a2a_protocol_plugin module registered, exposing the native A2A protocol
 # surface (JSON-RPC, GraphQL, SSE, agent-card) and bridging A2A tasks to a
 # Hermes Agent API Server and/or an OpenClaw Gateway over HTTP + SSE — see
 # docker-compose.yml, where both are optional profile-gated sibling services.
 #
-# All packages (silvaengine_gateway, a2a_daemon_engine, and the shared
-# SilvaEngine libraries) are pip-installed from git INTO the image over SSH
+# All packages (silvaengine_gateway, a2a_protocol_plugin, silvaengine_daemon,
+# and the shared SilvaEngine libraries) are pip-installed from git INTO the
+# image over SSH
 # (mirrors ../docker-mcp-kg-gateway / ../docker-silvaengine-gateway) — needed
 # because these are PRIVATE ideabosque repos. Configuration is entirely
 # env-driven at runtime via .env (see .env.example).
@@ -46,10 +47,11 @@ ENV PATH="/root/.local/bin:$PATH"
 # ── Python dependencies ──────────────────────────────────────────────────────
 # requirements.txt installs the third-party deps AND the shared SilvaEngine
 # libraries (silvaengine_utility, silvaengine_dynamodb_base, ...) from git over
-# SSH. requirements-modules.txt then installs silvaengine_gateway and
-# a2a_daemon_engine --no-deps: their metadata declares engines / bare names
-# not on PyPI (and intentionally absent from this A2A-only image); their real
-# deps are already satisfied by requirements.txt.
+# SSH. requirements-modules.txt then installs silvaengine_gateway,
+# a2a_protocol_plugin, and silvaengine_daemon (the shared daemon plumbing
+# a2a_protocol_plugin depends on) --no-deps: their metadata declares engines /
+# bare names not on PyPI (and intentionally absent from this A2A-only image);
+# their real deps are already satisfied by requirements.txt.
 COPY requirements.txt requirements-modules.txt ./
 
 RUN uv venv /opt/venv && \
@@ -59,7 +61,7 @@ RUN uv venv /opt/venv && \
 ENV PATH="/opt/venv/bin:$PATH"
 
 # ── PostgreSQL is the sole persistence backend ──────────────────────────────
-# a2a_daemon_engine's Config defaults DB_BACKEND to "dynamodb"; we force
+# a2a_protocol_plugin's Config defaults DB_BACKEND to "dynamodb"; we force
 # "postgresql" here so the gateway always wires the SQLAlchemy session even if
 # .env omits db_backend. Override only if you know why.
 ENV db_backend=postgresql
@@ -70,8 +72,8 @@ ENV db_backend=postgresql
 # permanent !include line that pulls in whatever's under ./addons/ — merged
 # at container startup by docker-entrypoint.sh (see
 # scripts/merge_addon_routes.py and addons/README.md). This image's one core
-# module (a2a_daemon_engine) is itself an addon file
-# (addons/a2a_daemon_engine.yaml) — NOT baked into the image (addons/ is
+# module (a2a_protocol_plugin) is itself an addon file
+# (addons/a2a_protocol_plugin.yaml) — NOT baked into the image (addons/ is
 # bind-mounted only, see docker-compose.yml). GATEWAY_ROUTES_CONFIG_PATH
 # points at routes.yaml below. Running this image without the compose bind
 # mounts (routes.yaml + addons/) registers ZERO modules — this image is

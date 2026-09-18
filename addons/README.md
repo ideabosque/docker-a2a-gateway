@@ -23,7 +23,7 @@ docker compose restart a2a-gateway
 
 Each file must contain either **one module map**, or a **YAML list of module
 maps** — the exact same shape as an entry in `routes.yaml`'s `modules:` list.
-See `example.module.yaml.disabled` in this folder, or `a2a_daemon_engine.yaml`
+See `example.module.yaml.disabled` in this folder, or `a2a_protocol_plugin.yaml`
 (this image's own core module — registered the same drop-in way as everything
 else here), for the full field reference.
 

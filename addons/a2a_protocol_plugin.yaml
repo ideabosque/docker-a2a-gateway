@@ -1,29 +1,32 @@
-# A2A Daemon Engine — native Agent-to-Agent (A2A) protocol surface
+# A2A Protocol Plugin — native Agent-to-Agent (A2A) protocol surface
 # (JSON-RPC 2.0, GraphQL, SSE, agent-card), bridging A2A tasks to a Hermes
 # Agent API Server and/or an OpenClaw Gateway (see HERMES_* / OPENCLAW_* env
-# vars in .env.example). This image's one originally-baked-in module, moved
-# here for consistency now that all modules (core or addon) follow the same
-# drop-in pattern — see README.md.
+# vars in .env.example). Replaces the former a2a_daemon_engine module: the
+# A2A-specific code now lives in a2a_protocol_plugin, importing shared daemon
+# plumbing (SSE broadcast, gateway dispatch wrappers) from silvaengine_daemon
+# — see README.md "Private repos over SSH" and requirements-modules.txt.
+# This image's one originally-baked-in module, registered here the same
+# drop-in way as every other addon — see README.md.
 
-name: a2a_daemon_engine
-package: a2a_daemon_engine
+name: a2a_protocol_plugin
+package: a2a_protocol_plugin
 transport: hybrid
-config_class: "a2a_daemon_engine.handlers.config:Config"
+config_class: "a2a_protocol_plugin.handlers.config:Config"
 config_init_style: kwargs
-on_shutdown: "a2a_daemon_engine.handlers.sse_manager:cleanup_sse"
-sse_manager: "a2a_daemon_engine.handlers.sse_manager:sse_manager"
+on_shutdown: "silvaengine_daemon.sse:cleanup_sse"
+sse_manager: "silvaengine_daemon.sse:sse_manager"
 routes:
   # GraphQL — A2A core queries/mutations (agents, tasks, messages, settings)
   - path: "/{endpoint_id}/a2a_core_graphql"
     handler_type: graphql
-    dispatch: "a2a_daemon_engine.main:dispatch_graphql"
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_graphql"
     methods: ["POST"]
     auth: true
 
   # REST — A2A JSON-RPC 2.0 protocol handler (message/send, tasks/get, ...)
   - path: "/{endpoint_id}/a2a"
     handler_type: rest
-    dispatch: "a2a_daemon_engine.main:dispatch_a2a"
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_jsonrpc"
     methods: ["POST"]
     auth: true
 
@@ -36,13 +39,13 @@ routes:
   # SSE POST — A2A JSON-RPC message + SSE push to connected clients
   - path: "/{endpoint_id}/a2a_sse"
     handler_type: rest
-    dispatch: "a2a_daemon_engine.main:dispatch_sse_message"
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_sse_message"
     methods: ["POST"]
     auth: true
 
   # REST — A2A Agent Card discovery (public, no auth)
   - path: "/{endpoint_id}/.well-known/agent-card.json"
     handler_type: rest
-    dispatch: "a2a_daemon_engine.main:dispatch_agent_card"
+    dispatch: "silvaengine_daemon.gateway:dispatch_a2a_agent_card"
     methods: ["GET"]
     auth: false

@@ -1,14 +1,23 @@
 # =============================================================================
 # Modules installed --no-deps (see Dockerfile)
 # =============================================================================
-# silvaengine_gateway and a2a_daemon_engine are installed WITHOUT dependency
+# silvaengine_gateway and a2a_protocol_plugin are installed WITHOUT dependency
 # resolution: silvaengine_gateway's metadata declares engine modules by bare
 # name (knowledge_graph_engine, rfq_engine, mcp-daemon-engine,
 # ai_coordination_engine) that are NOT on PyPI and are intentionally absent
 # from this A2A-only image. Their real third-party deps + the shared
 # SilvaEngine libraries are provided by requirements.txt.
 #
+# silvaengine_daemon is a2a_protocol_plugin's own required dependency
+# ("Core dependency: shared daemon plumbing" in its pyproject.toml) — the
+# protocol-neutral SSE broadcast / gateway-dispatch layer that used to live
+# inside a2a_daemon_engine itself, now factored out so mcp_protocol_plugin
+# shares it too. It also needs --no-deps: its own declared deps
+# (silvaengine-utility, silvaengine-dynamodb-base) are bare private-repo
+# names, same reason as everything else on this page.
+#
 # Over SSH — drop a deploy key with read access into ./.ssh before building
 # (see Dockerfile / README "Private repos over SSH").
-git+ssh://git@github.com/ideabosque/a2a_daemon_engine.git@main#egg=a2a_daemon_engine
+git+ssh://git@github.com/ideabosque/silvaengine_daemon.git@main#egg=silvaengine_daemon
+git+ssh://git@github.com/ideabosque/a2a_protocol_plugin.git@main#egg=a2a_protocol_plugin
 git+ssh://git@github.com/ideabosque/silvaengine_gateway.git@main#egg=silvaengine_gateway

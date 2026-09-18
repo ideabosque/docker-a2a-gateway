@@ -2,7 +2,7 @@
 
 A container image and `docker compose` stack that runs the
 [**SilvaEngine Gateway**](https://github.com/ideabosque/silvaengine_gateway) with
-**only** the [**a2a_daemon_engine**](https://github.com/ideabosque/a2a_daemon_engine)
+**only** the [**a2a_protocol_plugin**](https://github.com/ideabosque/a2a_protocol_plugin)
 module registered — exposing the native **Agent-to-Agent (A2A)** protocol surface
 (JSON-RPC 2.0, GraphQL, SSE, Agent Card) and bridging A2A tasks to **either or
 both** of two optional agent backends over HTTP + SSE:
@@ -21,9 +21,11 @@ neither (and point `HERMES_API_URL` / `OPENCLAW_API_URL` at external instances
 instead). Modeled on [`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s
 pattern of one always-on gateway plus interchangeable optional siblings.
 
-Both `silvaengine_gateway` and `a2a_daemon_engine` are **pip-installed from git
-INTO the image over SSH** (no host source mount) — needed because these are
-**private** ideabosque repos. The build clones them over SSH (see
+`silvaengine_gateway`, `a2a_protocol_plugin`, and `silvaengine_daemon` (the
+protocol-neutral daemon plumbing `a2a_protocol_plugin` depends on) are all
+**pip-installed from git INTO the image over SSH** (no host source mount) —
+needed because these are **private** ideabosque repos. The build clones
+them over SSH (see
 [Private repos over SSH](#-private-repos-over-ssh) below, required before the
 first build) — mirrors [`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s
 approach. Configuration is otherwise entirely env-driven via `.env` — no
@@ -79,7 +81,7 @@ partition id is supplied via the `Part-Id` request header. Together they form
 `partition_key = "{endpoint_id}#{Part-Id}"` (e.g. `a2a#default`).
 
 Routes are declared by drop-in addon files under [`addons/`](addons) (this
-image ships one: `a2a_daemon_engine`), merged at container startup into the
+image ships one: `a2a_protocol_plugin`), merged at container startup into the
 loader [`routes.yaml`](routes.yaml) bakes into the image and compose
 bind-mounts from the host — see
 [Adding more engine modules later](#-adding-more-engine-modules-later).
@@ -151,11 +153,11 @@ verify).
 ├── Dockerfile                  # Python 3.12-slim + uv + supervisor build (SSH deploy key)
 ├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / postgres siblings
 ├── requirements.txt            # third-party deps + shared SilvaEngine libs (git over SSH)
-├── requirements-modules.txt    # silvaengine_gateway + a2a_daemon_engine (--no-deps, git over SSH)
+├── requirements-modules.txt    # silvaengine_gateway + a2a_protocol_plugin + silvaengine_daemon (--no-deps, git over SSH)
 ├── routes.yaml                 # route manifest — just a loader, see addons/
 ├── addons/                     # drop-in module manifests (see addons/README.md)
 │   ├── README.md                # how the drop-in mechanism works
-│   ├── a2a_daemon_engine.yaml    # this image's one core module, registered as an addon
+│   ├── a2a_protocol_plugin.yaml    # this image's one core module, registered as an addon
 │   └── example.module.yaml.disabled # copy-paste template for a new addon
 ├── scripts/
 │   └── merge_addon_routes.py    # merges addons/*.yaml into data/_addons_generated.yaml
@@ -233,9 +235,9 @@ To run **OpenClaw** instead (or as well), see
 
 ## 🔑 Private repos over SSH
 
-The Dockerfile clones `silvaengine_gateway`, `a2a_daemon_engine`, and the
-shared `silvaengine_*` libraries over `git+ssh://git@github.com/...`. Before
-the first `docker compose build`:
+The Dockerfile clones `silvaengine_gateway`, `a2a_protocol_plugin`,
+`silvaengine_daemon`, and the shared `silvaengine_*` libraries over
+`git+ssh://git@github.com/...`. Before the first `docker compose build`:
 
 1. Drop a deploy key with read access to those repos into `./.ssh/` (e.g.
    `./.ssh/id_rsa` + `./.ssh/id_rsa.pub`). If it's your only key there,
@@ -373,9 +375,9 @@ workspace both bridges can mount.
 
 ### Step 3 — Build
 
-`silvaengine_gateway`, `a2a_daemon_engine`, and the shared SilvaEngine
-libraries are cloned from **private** GitHub repos under `ideabosque` over
-`git+ssh` — set up `./.ssh` first (see
+`silvaengine_gateway`, `a2a_protocol_plugin`, `silvaengine_daemon`, and the
+shared SilvaEngine libraries are cloned from **private** GitHub repos under
+`ideabosque` over `git+ssh` — set up `./.ssh` first (see
 [Private repos over SSH](#-private-repos-over-ssh) above).
 
 ```bash
@@ -547,7 +549,7 @@ erase them — delete the host directories to reset state.
 
 All configuration is environment-driven via `.env` (copied from
 `.env.example`). Compose feeds the whole file to the gateway, which forwards
-module settings to `a2a_daemon_engine`'s `Config.initialize()`.
+module settings to `a2a_protocol_plugin`'s `Config.initialize()`.
 
 ### Gateway — server
 
@@ -636,7 +638,7 @@ startup) > setting dict > Config class (env vars above)**. Both agent records
 are auto-seeded — see
 [Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side).
 
-### Hermes bridge (a2a_daemon_engine)
+### Hermes bridge (a2a_protocol_plugin)
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -645,7 +647,7 @@ are auto-seeded — see
 | `HERMES_MODEL` | `hermes-agent` | Model id passed to Hermes (dual role — see `.env.example`) |
 | `HERMES_STREAM_TIMEOUT` | `300` | Hermes SSE stream timeout, seconds |
 
-### Core Engine gateway bridge (a2a_daemon_engine)
+### Core Engine gateway bridge (a2a_protocol_plugin)
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -683,7 +685,7 @@ are auto-seeded — see
 | `HERMES_MEMORY_LIMIT` / `HERMES_CPU_LIMIT` | `4G` / `2.0` | Resource limits |
 | `TELEGRAM_BOT_TOKEN` / `DISCORD_BOT_TOKEN` / `SLACK_BOT_TOKEN` | — | Messaging gateway tokens (default profile only) |
 
-### OpenClaw bridge (a2a_daemon_engine)
+### OpenClaw bridge (a2a_protocol_plugin)
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -733,7 +735,7 @@ importable — and only the second ever needs a rebuild.
 
 **1. Register its routes** — drop a `*.yaml` file into `./addons/` (see
 `addons/README.md`) with a module map (name, package, `routes:`, etc. — same
-shape as `addons/a2a_daemon_engine.yaml`, this image's own core module,
+shape as `addons/a2a_protocol_plugin.yaml`, this image's own core module,
 registered the identical drop-in way). At container startup this gets merged
 into `routes.yaml`'s permanent `!include data/_addons_generated.yaml` line,
 so `routes.yaml` itself never needs editing. A module that fails to import is
@@ -770,7 +772,7 @@ safe to run on every container start — existing records are updated, not
 duplicated. The seeder stores `agent_type` in metadata, so handler
 resolution works via `AGENT_TYPE_MAP` without explicit module/class fields.
 `A2A_AI_AGENT_TYPE` / `A2A_DEFAULT_AGENT_UUID` remain as the env-var
-fallback for `a2a_daemon_engine`'s Config (used when no DB record matches).
+fallback for `a2a_protocol_plugin`'s Config (used when no DB record matches).
 
 With `hermes,openclaw` both bundled, requests route by `agent_uuid`:
 
@@ -914,7 +916,7 @@ Responses may arrive wrapped in an API-Gateway-style envelope
 
 ## 🗄️ Persistence & multi-tenancy
 
-`a2a_daemon_engine` uses **literal, unprefixed** table names:
+`a2a_protocol_plugin` uses **literal, unprefixed** table names:
 
 | Table | Holds |
 |---|---|
@@ -970,11 +972,14 @@ SilvaEngine libraries from git over SSH. Ordering there is load-bearing:
 `silvaengine_constants` must come first because `silvaengine_utility` imports it
 at module load without declaring it as a dependency.
 
-`requirements-modules.txt` then installs `silvaengine_gateway` and
-`a2a_daemon_engine` with `--no-deps`, also over git+ssh, because their
-metadata declares sibling engines by bare name (`knowledge_graph_engine`,
-`rfq_engine`, `mcp-daemon-engine`, `ai_coordination_engine`) that are not on
-PyPI and are intentionally absent from this A2A-only image.
+`requirements-modules.txt` then installs `silvaengine_gateway`,
+`a2a_protocol_plugin`, and `silvaengine_daemon` with `--no-deps`, also over
+git+ssh: `silvaengine_gateway`'s metadata declares sibling engines by bare
+name (`knowledge_graph_engine`, `rfq_engine`, `mcp-daemon-engine`,
+`ai_coordination_engine`) that are not on PyPI and are intentionally absent
+from this A2A-only image, and `silvaengine_daemon`'s own declared deps
+(`silvaengine-utility`, `silvaengine-dynamodb-base`) are the same kind of
+bare private-repo name — already satisfied above.
 
 ---
 
@@ -1124,9 +1129,9 @@ make rebuild
 
 ### After an upstream change (re-pull the git modules)
 
-Because `silvaengine_gateway` / `a2a_daemon_engine` are pip-installed from git
-at build time, an upstream change requires a rebuild with `--no-cache` so the
-git layer re-clones the latest `@main`:
+Because `silvaengine_gateway` / `a2a_protocol_plugin` / `silvaengine_daemon`
+are pip-installed from git at build time, an upstream change requires a
+rebuild with `--no-cache` so the git layer re-clones the latest `@main`:
 
 ```bash
 docker compose build --no-cache

@@ -2,7 +2,7 @@
 # SilvaEngine Gateway — Route Manifest
 # =============================================================================
 # This file is intentionally just a loader: every module — including the one
-# this image ships with (a2a_daemon_engine) — is a drop-in file under
+# this image ships with (a2a_protocol_plugin) — is a drop-in file under
 # ./addons/, merged into the single !include below at container startup. See
 # addons/README.md. This file itself should not need to change when modules
 # are added, removed, or edited.
@@ -20,7 +20,7 @@
 modules:
   # ── Modules (drop-in, see ./addons/) ───────────────────────────────────────
   # Auto-generated at container startup by scripts/merge_addon_routes.py from
-  # every *.yaml/*.yml file in ./addons/ — currently a2a_daemon_engine (this
+  # every *.yaml/*.yml file in ./addons/ — currently a2a_protocol_plugin (this
   # image's core module, bridging to Hermes and/or OpenClaw), plus whatever
   # else you drop in. This line never needs editing to add/remove/change a
   # module.

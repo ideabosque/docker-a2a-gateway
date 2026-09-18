@@ -1,16 +1,18 @@
 # =============================================================================
 # docker-a2a-gateway — container dependency set
 # =============================================================================
-# This image runs the SilvaEngine Gateway exposing ONLY a2a_daemon_engine
+# This image runs the SilvaEngine Gateway exposing ONLY a2a_protocol_plugin
 # (native A2A protocol surface) which bridges tasks to a Hermes Agent API
 # Server and/or an OpenClaw Gateway over HTTP + SSE. The route manifest is
 # A2A-only (see routes.yaml), so no KGE / RFQ / MCP engine deps are pulled in.
 #
-# silvaengine_gateway and a2a_daemon_engine are installed --no-deps in the
-# Dockerfile (their metadata lists engines / bare names not on PyPI); this
-# file provides their real third-party deps and the shared SilvaEngine libs.
-# Private ideabosque repos are fetched over git+ssh (the image copies a deploy
-# key and trusts github.com — see Dockerfile / README).
+# silvaengine_gateway, a2a_protocol_plugin, and silvaengine_daemon (the
+# protocol-neutral daemon plumbing a2a_protocol_plugin depends on) are all
+# installed --no-deps in the Dockerfile (their metadata lists engines / bare
+# names not on PyPI); this file provides their real third-party deps and the
+# shared SilvaEngine libs. Private ideabosque repos are fetched over git+ssh
+# (the image copies a deploy key and trusts github.com — see Dockerfile /
+# README).
 # =============================================================================
 
 # ── FastAPI stack (gateway serving deps) ─────────────────────────────────────
@@ -21,7 +23,7 @@ pydantic>=2.0
 pyyaml>=6.0
 boto3>=1.28.0
 
-# ── A2A Daemon Engine deps ───────────────────────────────────────────────────
+# ── A2A Protocol Plugin deps ─────────────────────────────────────────────────
 # Auth (JWT verification — gateway handles token issuance)
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
@@ -51,7 +53,7 @@ git+ssh://git@github.com/ideabosque/silvaengine_dynamodb_base.git@main#egg=silva
 git+ssh://git@github.com/ideabosque/silvaengine_definitions.git@main#egg=silvaengine_definitions
 
 # ── PostgreSQL driver (when db_backend=postgresql) ───────────────────────────
-# a2a_daemon_engine calls _initialize_db_session() with the postgresql+psycopg2
+# a2a_protocol_plugin calls _initialize_db_session() with the postgresql+psycopg2
 # SQLAlchemy dialect when DB_BACKEND=postgresql. SQLAlchemy comes transitively
 # via the a2a poetry `postgresql` extra would, but we install explicitly so the
 # gateway (which uses --no-deps) still has it.
@@ -62,6 +64,7 @@ alembic>=1.10
 # ── aiohttp (used by some a2a handlers / SDK transport paths) ────────────────
 aiohttp
 
-# ── The gateway + a2a daemon engine ──────────────────────────────────────────
-# silvaengine_gateway and a2a_daemon_engine are installed separately in the
-# Dockerfile with --no-deps. See Dockerfile for the git+ssh install lines.
+# ── The gateway + A2A protocol plugin + daemon plumbing ──────────────────────
+# silvaengine_gateway, a2a_protocol_plugin, and silvaengine_daemon are
+# installed separately in the Dockerfile with --no-deps. See Dockerfile for
+# the git+ssh install lines.

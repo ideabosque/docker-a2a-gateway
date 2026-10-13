@@ -216,7 +216,15 @@ class SSEListener:
                                     local_text = ""
 
                                 artifact = event.get("artifact", {})
-                                if isinstance(artifact, dict) and artifact.get("text"):
+                                # Reasoning chunks are tagged in artifact.metadata
+                                # and are not part of the answer; skip them.
+                                meta = artifact.get("metadata") if isinstance(artifact, dict) else None
+                                is_reasoning = isinstance(meta, dict) and any(
+                                    "reason" in str(v).lower() for v in meta.values()
+                                )
+                                if is_reasoning:
+                                    pass
+                                elif isinstance(artifact, dict) and artifact.get("text"):
                                     text = artifact["text"]
                                     # Skip accumulated / duplicate chunks
                                     if local_text and (

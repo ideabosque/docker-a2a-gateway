@@ -79,7 +79,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    command: ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+    # No `command:` here — the image CMD (docker-entrypoint.sh) must run so
+    # the addon merge writes data/_addons_generated.yaml before supervisord.
 
   # ── Optional bundled PostgreSQL (enable with the `postgres` profile) ──────
   # PostgreSQL is the sole persistence backend for a2a_protocol_plugin
@@ -126,6 +127,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      # First start runs initdb into an empty bind mount (~40s observed on a
+      # Windows host) and bounces the server once; without a grace period the
+      # check exhausts its retries mid-init, and the gateway (optional
+      # dependency) starts without waiting for the database.
+      start_period: 120s
 
   # ── Option A: Hermes Agent (optional sibling — enable with the `hermes` profile)
   # Nous Research Hermes Agent running its OpenAI-compatible API server, which
@@ -227,7 +233,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      # First container start with an empty /opt/data bind mount runs a
+      # dependency-environment build (~15 min observed) before the API
+      # server binds. start_period keeps compose reporting "starting"
+      # (not "unhealthy") through that window; a successful probe still
+      # flips the container healthy immediately, so warm starts are not
+      # delayed by this.
+      start_period: 900s
 
   # ── Option B: OpenClaw Gateway (optional sibling — enable with the `openclaw` profile)
   # OpenClaw running its OpenAI-compatible gateway, which the A2A gateway
@@ -241,7 +253,7 @@ services:
       args:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple/}
         PYTHON: ${PYTHON:-python3.12}
-        NODE_VERSION: ${NODE_VERSION:-22}
+        NODE_VERSION: ${NODE_VERSION:-26}
     container_name: ${OPENCLAW_CONTAINER_NAME:-container-openclaw}
     profiles: ["openclaw"]
     env_file:
@@ -251,7 +263,12 @@ services:
     volumes:
       - ./www:/var/www
       - ${PROJECTS_FOLDER:-./www/projects}:/var/www/projects
-      - ${OPENCLAW_FOLDER:-./www/openclaw}:/root/.openclaw
+      # Named volume by default: OpenClaw's atomic config/state writes
+      # fstat() a file after renaming it, which fails with ENOENT on Docker
+      # Desktop (Windows/macOS) bind mounts — onboarding rolls back and the
+      # gateway refuses to start. Set OPENCLAW_FOLDER to a host path (e.g.
+      # ./www/openclaw) to bind-mount instead on a Linux host.
+      - ${OPENCLAW_FOLDER:-openclaw-data}:/root/.openclaw
       # Same deploy key as the main gateway image (see "Private repos over
       # SSH" in README) — mounted read-only at runtime, never baked into
       # this image. Mounted at a staging path, not /root/.ssh directly: the
@@ -287,3 +304,7 @@ services:
 # A single default bridge network lets the gateway reach the `hermes` /
 # `openclaw` services by name (http://hermes:8642, http://openclaw:18789)
 # when their respective profiles are active.
+
+volumes:
+  # OpenClaw config/agents/sessions (see the openclaw service's volumes).
+  openclaw-data:

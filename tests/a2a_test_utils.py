@@ -156,7 +156,7 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     """Build a config dict from .env + explicit overrides.
 
     Accepted overrides: gateway_url, hermes_url, openclaw_url, token,
-    endpoint_id, part_id, agent_uuid.
+    endpoint_id, part_id, agent_uuid, bridge.
 
     ``hermes_url`` / ``openclaw_url`` default to HOST-reachable URLs
     (127.0.0.1 + the host-published port), not the in-container
@@ -164,11 +164,12 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     host can't resolve). The gateway itself still uses HERMES_API_URL /
     OPENCLAW_API_URL to reach the bundled sibling services.
 
-    ``agent_uuid`` defaults to A2A_DEFAULT_AGENT_UUID from .env (the bridge
-    fallback default configured there — see .env.example). Pass
-    ``--agent-uuid`` explicitly to target the OTHER bridge's agent when both
-    are registered (e.g. a2a-openclaw-agent) and the env default points at
-    Hermes, or vice versa.
+    ``agent_uuid`` defaults to the calling bridge's own seeded agent —
+    A2A_HERMES_AGENT_UUID or A2A_OPENCLAW_AGENT_UUID, picked by the ``bridge``
+    override ("hermes" / "openclaw") — so tests/openclaw/* really exercise
+    OpenClaw even when A2A_DEFAULT_AGENT_UUID points at Hermes. Without a
+    ``bridge`` it falls back to A2A_DEFAULT_AGENT_UUID. ``--agent-uuid``
+    always wins.
     """
     container_port = env.get("CONTAINER_PORT", "8765")
     gateway_url = (overrides.get("gateway_url") or
@@ -177,8 +178,14 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     openclaw_url = (overrides.get("openclaw_url") or _host_openclaw_url(env)).rstrip("/")
     endpoint_id = overrides.get("endpoint_id") or env.get("endpoint_id", "a2a")
     part_id = overrides.get("part_id") or env.get("part_id", "default")
-    agent_uuid = (overrides.get("agent_uuid") or
-                  env.get("A2A_DEFAULT_AGENT_UUID", "a2a-hermes-agent"))
+    bridge = overrides.get("bridge")
+    if bridge == "openclaw":
+        default_agent = env.get("A2A_OPENCLAW_AGENT_UUID", "a2a-openclaw-agent")
+    elif bridge == "hermes":
+        default_agent = env.get("A2A_HERMES_AGENT_UUID", "a2a-hermes-agent")
+    else:
+        default_agent = env.get("A2A_DEFAULT_AGENT_UUID", "a2a-hermes-agent")
+    agent_uuid = overrides.get("agent_uuid") or default_agent
     token = resolve_token(env, overrides.get("token"))
     return {
         "gateway_url": gateway_url,

@@ -43,7 +43,7 @@ from a2a_test_utils import (
 
 __author__ = "bibow"
 
-DEFAULT_PROMPT = "Say hello from OpenClaw through A2A. Reply in one short sentence."
+DEFAULT_PROMPT = "Say hello and introduce yourself in one short sentence."
 
 
 class SSEListener:
@@ -162,6 +162,7 @@ def main():
     env = load_env()
     cfg = resolve_config(
         env,
+        bridge="openclaw",
         gateway_url=args.gateway_url,
         openclaw_url=args.openclaw_url,
         token=args.token,

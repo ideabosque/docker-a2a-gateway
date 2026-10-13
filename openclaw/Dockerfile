@@ -15,6 +15,7 @@ RUN dnf -y upgrade && \
     dnf -y install \
         supervisor \
         git \
+        curl \
         gcc \
         gcc-c++ \
         zip \

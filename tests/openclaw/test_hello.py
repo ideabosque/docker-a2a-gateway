@@ -58,6 +58,7 @@ def main():
     env = load_env()
     cfg = resolve_config(
         env,
+        bridge="openclaw",
         gateway_url=args.gateway_url,
         openclaw_url=args.openclaw_url,
         token=args.token,
@@ -109,6 +110,12 @@ def main():
         print(f"{R}No reply text extracted. Raw:{RST}")
         print(f"  {body}")
         return 4
+
+    # The bridge reports upstream failures (unreachable agent, auth, ...) as
+    # reply text rather than a JSON-RPC error.
+    if reply.startswith("AI agent error"):
+        print(f"\n{R}FAIL{RST} OpenClaw bridge error: {reply}")
+        return 5
 
     print(f"\n{G}PASS{RST} OpenClaw reply: {reply}")
     print(f"{D}({len(reply)} chars){RST}")

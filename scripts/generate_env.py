@@ -35,8 +35,12 @@ CLI overrides (always win, even over an already-set value):
 User must set before first start (unless passed via the flags above):
   OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_MODEL
   (or a provider-specific API key like ANTHROPIC_API_KEY)
-  HERMES_MODEL_PROVIDER (default: anthropic — change to openai for OPENAI_COMPAT_*)
-  OPENCLAW_MODEL_PROVIDER (default: empty — set to openai_compat for OPENAI_COMPAT_*)
+
+Derived (only when missing or blank in .env):
+  HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+  When OPENAI_COMPAT_API_KEY is set: HERMES_MODEL_PROVIDER=openai,
+  OPENCLAW_MODEL_PROVIDER=openai_compat, HERMES_MODEL=$OPENAI_COMPAT_MODEL —
+  so passing the --openai-compat-* flags is all the config a first start needs.
 
 Usage:
     python scripts/generate_env.py                        # create .env (refuses if it exists)
@@ -174,6 +178,18 @@ def main():
         if value:
             cli_overrides[var_name] = value
 
+    # Settings derived from the inputs so `make init` with OPENAI_COMPAT_* is
+    # enough to start the full stack — only applied when the var is missing or
+    # blank in .env (a value the user chose is never overridden).
+    compat_key = cli_overrides.get("OPENAI_COMPAT_API_KEY") or current("OPENAI_COMPAT_API_KEY")
+    compat_model = cli_overrides.get("OPENAI_COMPAT_MODEL") or current("OPENAI_COMPAT_MODEL")
+    derived: dict[str, str] = {"HERMES_DASHBOARD_BASIC_AUTH_USERNAME": "admin"}
+    if compat_key:
+        derived["HERMES_MODEL_PROVIDER"] = "openai"
+        derived["OPENCLAW_MODEL_PROVIDER"] = "openai_compat"
+        if compat_model:
+            derived["HERMES_MODEL"] = compat_model
+
     # Random tokens — reuse the existing value if already set, so a repeat run
     # only fills in what's actually missing.
     generated: dict[str, str] = {}
@@ -240,6 +256,8 @@ def main():
         elif var_name in PORT_VARS:
             port_val = current(var_name) or str(PORT_VARS[var_name] + PORT_OFFSET)
             output_lines.append(f"{var_name}={port_val}")
+        elif var_name in derived and not current(var_name):
+            output_lines.append(f"{var_name}={derived[var_name]}")
         elif var_name in existing:
             # Preserve whatever the user already has for every other var too
             # (LLM keys, COMPOSE_PROFILES, model choices, ...) — the template
@@ -283,18 +301,20 @@ def main():
         print("Ports offset +10 from .env.example defaults to avoid sibling conflicts.")
         print()
 
-    print("Before first start, edit .env and set:")
-    print("  1. COMPOSE_PROFILES           (default: postgres,hermes - add openclaw if needed)")
-    print("  2. LLM credentials:")
-    print("     OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_MODEL")
-    print("     (or a provider-specific key like ANTHROPIC_API_KEY)")
-    print("  3. HERMES_MODEL_PROVIDER       (set to 'openai' to use OPENAI_COMPAT_*)")
-    print("  4. OPENCLAW_MODEL_PROVIDER     (set to 'openai_compat' to use OPENAI_COMPAT_*)")
-    print("  5. HERMES_DASHBOARD_BASIC_AUTH_USERNAME (set to 'admin' if dashboard is on)")
-    print()
+    if compat_key:
+        print("Hermes and OpenClaw are wired to OPENAI_COMPAT_* "
+              "(HERMES_MODEL_PROVIDER=openai, OPENCLAW_MODEL_PROVIDER=openai_compat)"
+              " unless .env already chose otherwise.")
+        print()
+    else:
+        print("Before first start, edit .env and set LLM credentials:")
+        print("  OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_API_KEY / OPENAI_COMPAT_MODEL")
+        print("  (then re-run with --force to wire Hermes/OpenClaw to them), or a")
+        print("  provider-specific key like ANTHROPIC_API_KEY + HERMES_MODEL_PROVIDER /")
+        print("  OPENCLAW_MODEL_PROVIDER.")
+        print()
     print("Then:")
-    print("  mkdir -p www/hermes www/openclaw www/projects www/logs postgres_data postgres_logs")
-    print("  docker compose build && docker compose up -d")
+    print("  docker compose up -d --build")
 
 
 if __name__ == "__main__":

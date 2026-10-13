@@ -53,6 +53,11 @@ if [ -d /root/.ssh-src ] && [ "$(ls -A /root/.ssh-src 2>/dev/null)" ]; then
     chmod 600 /root/.ssh/* 2>/dev/null || true
 fi
 
+# supervisord's program log lives under /var/www/logs (openclaw.ini); a fresh
+# clone has no ./www/logs on the host, and supervisord refuses to start
+# without the directory.
+mkdir -p /var/www/logs
+
 # ── First-start model/provider auto-configuration ────────────────────────────
 OPENCLAW_CONFIG_FILE="/root/.openclaw/openclaw.json"
 PROVIDER="${OPENCLAW_MODEL_PROVIDER:-}"

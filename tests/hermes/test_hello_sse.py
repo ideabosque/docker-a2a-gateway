@@ -43,7 +43,7 @@ from a2a_test_utils import (
 
 __author__ = "bibow"
 
-DEFAULT_PROMPT = "Say hello from Hermes through A2A. Reply in one short sentence."
+DEFAULT_PROMPT = "Say hello and introduce yourself in one short sentence."
 
 
 class SSEListener:
@@ -162,6 +162,7 @@ def main():
     env = load_env()
     cfg = resolve_config(
         env,
+        bridge="hermes",
         gateway_url=args.gateway_url,
         hermes_url=args.hermes_url,
         token=args.token,

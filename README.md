@@ -365,12 +365,16 @@ those at your own instance (e.g. `PG_HOST=host.docker.internal`,
 ### Step 2 — Create the bind-mount directories for whichever siblings you bundle
 
 ```bash
-mkdir -p www/hermes www/openclaw www/projects
+mkdir -p www/hermes www/projects
 ```
 
+(Optional — Docker creates missing bind-mount folders on first `up`.)
+
 `www/hermes` (`HERMES_DATA_FOLDER`) → `/opt/data` is all Hermes state;
-`www/openclaw` (`OPENCLAW_FOLDER`) → `/root/.openclaw` is all OpenClaw
-config/agents/sessions; `www/projects` (`PROJECTS_FOLDER`) → is a shared
+the `openclaw-data` named volume (`OPENCLAW_FOLDER`) → `/root/.openclaw` is
+all OpenClaw config/agents/sessions (a named volume because OpenClaw's config
+writes fail on Docker Desktop bind mounts — on Linux you may set it to a host
+folder such as `./www/openclaw`); `www/projects` (`PROJECTS_FOLDER`) → is a shared
 workspace both bridges can mount.
 
 ### Step 3 — Build
@@ -534,7 +538,7 @@ host-side conflict without touching the app config.
 | `./postgres_data` (`POSTGRES_DATA_PATH`) | `/var/lib/postgresql/data` | postgres | PGDATA (`/pgdata` subdir) |
 | `./postgres_logs` (`POSTGRES_LOG_PATH`) | `/var/log/postgresql` | postgres | `postgresql-YYYY-MM-DD.log` |
 | `./www/hermes` (`HERMES_DATA_FOLDER`) | `/opt/data` | hermes | All Hermes state |
-| `./www/openclaw` (`OPENCLAW_FOLDER`) | `/root/.openclaw` | openclaw | All OpenClaw config/agents/sessions |
+| `openclaw-data` volume (`OPENCLAW_FOLDER`) | `/root/.openclaw` | openclaw | All OpenClaw config/agents/sessions (named volume; bind mounts break OpenClaw on Docker Desktop) |
 | `./www` | `/var/www` | openclaw | Full www mirror (logs, projects, openclaw) |
 | `./.ssh` (`SSH_HOST_DIR`) | `/root/.ssh-src` (ro) | openclaw | Same deploy key as the main gateway build — entrypoint copies it into a proper `~/.ssh` at container start |
 | `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) | hermes, openclaw | Shared workspace |
@@ -702,7 +706,7 @@ are auto-seeded — see
 | `PIP_INDEX_URL` / `PYTHON` / `NODE_VERSION` | see `.env.example` | Build args for `./openclaw/Dockerfile` |
 | `OPENCLAW_PORT` | `18789` | Published host port |
 | `OPENCLAW_CONTAINER_NAME` | `container-openclaw` | Container name |
-| `OPENCLAW_FOLDER` | `./www/openclaw` | Host bind mount for config/agents/sessions |
+| `OPENCLAW_FOLDER` | `openclaw-data` | Named volume (or host path on Linux) for config/agents/sessions |
 | `SSH_HOST_DIR` | `./.ssh` | Deploy key mounted into the container at runtime (same key the main gateway build uses) — see [Private repos over SSH](#-private-repos-over-ssh) |
 | `OLLAMA_HOST` / `OLLAMA_API_KEY` | `https://ollama.com` / — | Ollama Cloud, used by OpenClaw for model serving |
 | `OPENCLAW_MODEL_PROVIDER` | — | First-start auto-config provider: `openai_compat` (generic), `anthropic`, `openai`, `openrouter`, `gemini`, `mistral`, `moonshot`, `ollama`, `custom`, or empty for manual setup |

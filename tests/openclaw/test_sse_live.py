@@ -196,6 +196,7 @@ def main():
     env = load_env()
     cfg = resolve_config(
         env,
+        bridge="openclaw",
         gateway_url=args.gateway_url,
         openclaw_url=args.openclaw_url,
         token=args.token,

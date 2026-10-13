@@ -288,6 +288,7 @@ def main():
     env = load_env()
     cfg = resolve_config(
         env,
+        bridge="hermes",
         gateway_url=args.gateway_url,
         hermes_url=args.hermes_url,
         token=args.token,

@@ -869,12 +869,15 @@ No manual GraphQL mutation is needed — all records exist after `docker compose
 A record is seeded even when its sibling profile is off; requests to it then
 fail until its `*_API_URL` points at a reachable server.
 
-**goose conversations.** goose keeps the conversation history itself. To
-continue a conversation, send the same client-chosen `metadata.thread_uuid`
-on every turn; the gateway maps it to a goose session per tenant (`Part-Id`),
-so the same `thread_uuid` under another tenant starts a new session instead of
-resuming someone else's. Echoing the reply's `contextId` does **not** resume
-the goose session yet (see [Known limitations](#-known-limitations)).
+**Continuing a conversation (all bridges).** Send the reply's `contextId`
+back as `message.contextId` on the next turn — the standard A2A way. A
+client-chosen `metadata.thread_uuid` sent on every turn also works (the
+`test_chatbot.py` scripts do this), and then the reply's `contextId` is that
+`thread_uuid`. Hermes and OpenClaw reload the stored history for that
+conversation; goose and the core engine keep history themselves, and the
+gateway maps the conversation to their own session/thread per tenant
+(`Part-Id`), so the same id under another tenant starts a new conversation
+instead of resuming someone else's.
 
 ---
 
@@ -1331,11 +1334,6 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
   name no agent go to `A2A_DEFAULT_AGENT_UUID`; address the other bridges by
   their seeded `agent_uuid` (see
   [side by side](#-running-several-bridges-side-by-side)).
-- **goose: continue a conversation with `metadata.thread_uuid`, not
-  `contextId`.** Echoing the `contextId` from a reply back in
-  `message.contextId` does not reach the bridge, so goose starts a new
-  session. Send the same client-chosen `metadata.thread_uuid` on every turn
-  instead (as `tests/goose/test_chatbot.py` does).
 - **goose: `GOOSE_PERMISSION_MODE=ask` needs a long-lived gateway process.**
   The pending approval lives in the process holding the goose stream, so it
   does not work under serverless dispatch.
@@ -1360,7 +1358,7 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | A2A tasks hang or error (OpenClaw) | Confirm OpenClaw is reachable (`OPENCLAW_API_URL`) and `OPENCLAW_API_KEY` matches its `gateway.auth.token` — see [Step 6](#step-6--openclaw-setup). |
 | goose task fails with "HTTP 401" / authentication | `GOOSE_SECRET_KEY` (gateway) ≠ `GOOSE_SERVER__SECRET_KEY` (goose). If you let goose generate it, read it with `docker exec container-goose cat /root/.config/goose/server-secret.txt`, set both vars, and recreate the gateway. |
 | goose replies are empty or the model errors | No provider configured: set `GOOSE_MODEL_PROVIDER` + its key before the **first** start, or run `docker exec -it container-goose goose configure`. Provider setup is skipped once `config.yaml` exists in `goose-data`. |
-| goose turn starts a new conversation | Send the same `metadata.thread_uuid` on every turn (echoing `contextId` is not enough); also check the `Part-Id` is unchanged and the `goose-share` volume was not reset. |
+| A turn starts a new conversation | Send back the previous reply's `contextId` (or the same `metadata.thread_uuid`) and keep the same `Part-Id`; for goose, also check the `goose-share` volume was not reset. Needs an `a2a_protocol_plugin` build with the conversation-key fix (rebuild with a new `MODULE_STAMP`). |
 | Hermes/OpenClaw auth fails for no visible reason | An inline `#` comment in `.env` was absorbed into the value. Put comments on their own line. |
 | SSE connects but no chunks arrive | Send with `"stream": true`, connect the listener *before* sending, and check `A2A_STREAMING_ENABLED=true`. |
 | `tasks/get` says "Task not found" | Verify the task exists: `SELECT * FROM a2a_tasks WHERE task_id='...'` in the `postgres` container. If not, rebuild with `--no-cache` to pick up an upstream fix. |

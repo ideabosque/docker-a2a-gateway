@@ -32,9 +32,9 @@
 #                            for the A2A gateway. The key is stored only in
 #                            the goose-data volume (goose config dir).
 #
-# Builtin extensions: supervisor keeps the entrypoint out of the way; enable
-# extras with EXTRA_GOOSE_SERVE_ARGS (e.g.
-# `EXTRA_GOOSE_SERVE_ARGS=--with-builtin developer` in .env).
+# Builtin extensions: `goose serve` always loads the `developer` builtin;
+# enable more with EXTRA_GOOSE_SERVE_ARGS in .env (e.g.
+# `EXTRA_GOOSE_SERVE_ARGS=--with-builtin memory`).
 # ============================================================================
 set -e
 

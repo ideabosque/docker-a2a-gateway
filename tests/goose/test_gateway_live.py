@@ -5,15 +5,15 @@ Live E2E suite for the docker-a2a-gateway stack (Goose bridge).
 
 Runs a sequence of checks against the running gateway + goose serve:
 
-  01  goose serve health (/v1/models)
+  01  goose serve health (ACP `initialize` probe on POST /acp)
   02  Gateway health
   03  A2A Agent Card discovery (public, no auth)
   04  A2A core GraphQL ping (auth)
   05  Non-streaming message/send  -> reply text + task state
   06  tasks/get on the created task
   07  tasks/list
-  08  tasks/cancel on a long-running task (best-effort — Goose has no
-      server-side stop; the bridge stream unblocks locally)
+  08  tasks/cancel on a long-running task (the bridge sends ACP
+      `session/cancel`; goose stops the run mid-flight)
   09  Failure path: invalid method / bad agent uuid
 
 Each step prints PASS/FAIL with a detail line. Exits non-zero if any step
@@ -214,10 +214,10 @@ def test_08_cancel(cfg):
         task_type="goose_e2e_cancel", stream=True,
     )
     # Fire the send in a background thread so the long-running task is
-    # in-flight when we send the cancel below.  The original silvaengine_gateway
-    # test does the same — see test_goose_gateway_live.py upstream.
-    # Goose has no server-side stop, so the bridge stream unblocks locally
-    # but the Goose run keeps going.
+    # in-flight when we send the cancel below (same pattern as the Hermes and
+    # OpenClaw suites). The bridge forwards the cancel to goose as ACP
+    # `session/cancel`, which ends the goose run with stopReason=cancelled.
+    # A cancel that lands before goose starts the run is a no-op.
     stream_result = {"response": None, "error": None}
 
     def _bg():
@@ -244,8 +244,7 @@ def test_08_cancel(cfg):
     err = jsonrpc_error(body)
     # cancel may legitimately return the task in CANCELED state, or an error
     # if the task already completed or isn't in the SDK's in-memory registry.
-    # Goose has no server-side stop, so the bridge stream unblocks locally
-    # but the Goose run keeps going.  Known non-fatal errors:
+    # Known non-fatal errors:
     #   - "Task not found"        — message/send doesn't register in the
     #                              SDK's ActiveTaskRegistry (in-memory store).
     #   - "'dict' object has no   — upstream a2a_protocol_plugin cancel path

@@ -4,25 +4,28 @@ A container image and `docker compose` stack that runs the
 [**SilvaEngine Gateway**](https://github.com/ideabosque/silvaengine_gateway) with
 **only** the [**a2a_protocol_plugin**](https://github.com/ideabosque/a2a_protocol_plugin)
 module registered — exposing the native **Agent-to-Agent (A2A)** protocol surface
-(JSON-RPC 2.0, GraphQL, SSE, Agent Card) and bridging A2A tasks to **either or
-both** of two optional agent backends over HTTP + SSE:
+(JSON-RPC 2.0, GraphQL, SSE, Agent Card) and bridging A2A tasks to **any
+combination** of three optional agent backends:
 
 - **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research) — an
-  OpenAI-compatible API server, bundled via the `hermes` compose profile.
+  OpenAI-compatible API server (HTTP + SSE), bundled via the `hermes` compose
+  profile.
 - **[OpenClaw](https://github.com/openclaw)** — a Node.js + Python
-  OpenAI-compatible gateway, bundled via the `openclaw` compose profile.
-- **[goose](https://github.com/aaif-goose/goose)** - a local AI agent run as
-  `goose serve` (ACP - the Agent Client Protocol - over Streamable HTTP +
-  SSE), bundled via the `goose` compose profile.
+  OpenAI-compatible gateway (HTTP + SSE), bundled via the `openclaw` compose
+  profile.
+- **[goose](https://github.com/aaif-goose/goose)** — an open-source AI agent
+  run as `goose serve`, which speaks ACP (the Agent Client Protocol) over HTTP
+  + SSE at `/acp`, bundled via the `goose` compose profile.
 
 State persists to a bundled **PostgreSQL** backend (DynamoDB is not supported by
-this image). This repository **consolidates** what were previously two separate
-images — `docker-a2a-hermes-agent-gateway` and `docker-a2a-openclaw-gateway`.
-The gateway image itself is identical either way; Hermes and OpenClaw are just
-independent, profile-gated sibling services — enable one, the other, both, or
-neither (and point `HERMES_API_URL` / `OPENCLAW_API_URL` at external instances
-instead). Modeled on [`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s
-pattern of one always-on gateway plus interchangeable optional siblings.
+this image). This repository **consolidates** what were previously separate
+images (`docker-a2a-hermes-agent-gateway`, `docker-a2a-openclaw-gateway`) and
+adds goose. The gateway image is the same whichever backends you use; Hermes,
+OpenClaw and goose are independent, profile-gated sibling services — enable
+any of them, or none, and point `HERMES_API_URL` / `OPENCLAW_API_URL` /
+`GOOSE_API_URL` at external instances instead. Modeled on
+[`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s pattern of one
+always-on gateway plus interchangeable optional siblings.
 
 `silvaengine_gateway`, `a2a_protocol_plugin`, and `silvaengine_daemon` (the
 protocol-neutral daemon plumbing `a2a_protocol_plugin` depends on) are all
@@ -36,7 +39,8 @@ runtime secrets are baked in.
 
 Modeled on `docker-silvaengine-gateway` (build / supervisor / SSH-key
 install), `docker-hermes-agent` (the optional Hermes sibling service), and
-`docker-openclaw` (the optional OpenClaw sibling service).
+`docker-openclaw` (the optional OpenClaw sibling service). The goose sibling
+(`./goose`) installs a pinned goose release binary.
 
 ---
 
@@ -53,7 +57,7 @@ install), `docker-hermes-agent` (the optional Hermes sibling service), and
 - [Volumes & persisted state](#-volumes--persisted-state)
 - [Configuration reference](#️-configuration-reference)
 - [Adding more engine modules later](#-adding-more-engine-modules-later)
-- [Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side)
+- [Running several bridges side by side](#-running-several-bridges-side-by-side)
 - [Using the A2A surface](#-using-the-a2a-surface)
 - [Persistence & multi-tenancy](#-persistence--multi-tenancy)
 - [Image internals](#-image-internals)
@@ -94,37 +98,36 @@ bind-mounts from the host — see
 ## 🏗️ Architecture
 
 ```
-                ┌─────────────────────────────────────────────────┐
-   A2A client   │  a2a-gateway (silvaengine_gateway + a2a_daemon)  │
-   ───────────▶ │  /{ep}/a2a  (JSON-RPC)                          │
-  (JSON-RPC/SSE)│  /{ep}/a2a_sse (SSE)                            │
-                │  /{ep}/a2a_core_graphql                         │
-                │  /{ep}/.well-known/agent-card.json              │
-                └───────┬───────────────┬──────────────┬──────────┘
-                        │               │              │
-          HermesAgentHandler   OpenClawAgentHandler   SQLAlchemy (psycopg2)
-             HERMES_API_URL       OPENCLAW_API_URL     PG_HOST:PG_PORT
-                        ▼               ▼              ▼
-       ┌────────────────────┐ ┌────────────────────┐ ┌─────────────────────────────┐
-       │ hermes  [optional]  │ │ openclaw [optional] │ │ postgres  [optional]        │
-       │ (nousresearch/…)    │ │ (Node.js + Python)  │ │ a2a_agents / a2a_tasks /    │
-       │ OpenAI-compat API   │ │ OpenAI-compat API   │ │ a2a_messages / a2a_settings │
-       │ + web dashboard     │ │ /v1/chat/completions │ └─────────────────────────────┘
-       └────────────────────┘ └────────────────────┘
+                ┌──────────────────────────────────────────────────────────────┐
+   A2A client   │  a2a-gateway (silvaengine_gateway + silvaengine_daemon       │
+   ───────────▶ │               + a2a_protocol_plugin)                         │
+  (JSON-RPC/SSE)│  /{ep}/a2a (JSON-RPC)   /{ep}/a2a_sse (SSE)                  │
+                │  /{ep}/a2a_core_graphql /{ep}/.well-known/agent-card.json    │
+                └──────┬──────────────────┬─────────────────┬──────────┬───────┘
+                       │                  │                 │          │
+          HermesAgentHandler  OpenClawAgentHandler  GooseAgentHandler  SQLAlchemy
+            HERMES_API_URL      OPENCLAW_API_URL      GOOSE_API_URL    PG_HOST
+                       ▼                  ▼                 ▼          ▼
+         ┌──────────────────┐ ┌───────────────────┐ ┌───────────────┐ ┌──────────────┐
+         │ hermes [opt]     │ │ openclaw [opt]    │ │ goose [opt]   │ │ postgres     │
+         │ OpenAI-compat    │ │ OpenAI-compat     │ │ goose serve   │ │ [opt]        │
+         │ API + dashboard  │ │ /v1/chat/...      │ │ ACP at /acp   │ │ a2a_* tables │
+         └──────────────────┘ └───────────────────┘ └───────────────┘ └──────────────┘
 ```
 
-The gateway is the only always-on service. **Hermes**, **OpenClaw**, and
-**PostgreSQL** are all profile-gated siblings — bundle whichever you need, or
-turn a profile off and point its `*_API_URL` / `PG_*` at an external instance.
-Which bridge a given A2A request reaches is decided per-agent (see
-[Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side)).
+The gateway is the only always-on service. **Hermes**, **OpenClaw**,
+**goose**, and **PostgreSQL** are all profile-gated siblings — bundle
+whichever you need, or turn a profile off and point its `*_API_URL` / `PG_*`
+at an external instance. Which bridge a given A2A request reaches is decided
+per agent (see
+[Running several bridges side by side](#-running-several-bridges-side-by-side)).
 
 ---
 
 ## 🔄 Request lifecycle
 
-A single `message/send` with `stream=true` traverses (Hermes shown; OpenClaw is
-the same shape, swapping the handler and target):
+A single `message/send` with `stream=true` traverses (Hermes shown; OpenClaw and
+goose are the same shape, swapping the handler and target):
 
 ```
 1. Client         POST /{ep}/a2a  {jsonrpc, method:"message/send", params}
@@ -133,10 +136,13 @@ the same shape, swapping the handler and target):
                   → partition_key = "{ep}#{Part-Id}"
 3. a2a_daemon     dispatch_a2a → A2ADaemonExecutor
                   → resolve_agent(): agent metadata (DB) > setting dict > Config (env)
-4. Handler        HermesAgentHandler or OpenClawAgentHandler
+4. Handler        HermesAgentHandler, OpenClawAgentHandler or GooseAgentHandler
                    (per-agent metadata, or A2A_AI_AGENT_TYPE fallback)
 5. Bridge         Hermes:   POST {HERMES_API_URL}/v1/runs, GET .../events (SSE)
                   OpenClaw: POST {OPENCLAW_API_URL}/v1/chat/completions (stream)
+                  goose:    POST/GET {GOOSE_API_URL}/acp — initialize,
+                            session/new|load, session/prompt (SSE updates),
+                            DELETE /acp when the turn ends
 6. Broadcast      token chunks → subscribers on GET /{ep}/a2a_sse
 7. Persist        task + messages written to PostgreSQL (a2a_* tables, RLS-scoped)
 8. Response       accumulated reply also returned in the HTTP JSON-RPC result
@@ -144,8 +150,8 @@ the same shape, swapping the handler and target):
 
 Step 8 matters: even when streaming, the HTTP response carries the full reply,
 so a client that misses SSE frames can still fall back to it (this is exactly
-what `tests/hermes/test_sse_live.py` step 06 / `tests/openclaw/test_sse_live.py`
-verify).
+what step 06 of `tests/hermes/test_sse_live.py`, `tests/openclaw/test_sse_live.py`
+and `tests/goose/test_sse_live.py` verifies).
 
 ---
 
@@ -154,7 +160,7 @@ verify).
 ```text
 .
 ├── Dockerfile                  # Python 3.12-slim + uv + supervisor build (SSH deploy key)
-├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / postgres siblings
+├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / goose / postgres siblings
 ├── requirements.txt            # third-party deps + shared SilvaEngine libs (git over SSH)
 ├── requirements-modules.txt    # silvaengine_gateway + a2a_protocol_plugin + silvaengine_daemon (--no-deps, git over SSH)
 ├── routes.yaml                 # route manifest — just a loader, see addons/
@@ -163,7 +169,9 @@ verify).
 │   ├── a2a_protocol_plugin.yaml    # this image's one core module, registered as an addon
 │   └── example.module.yaml.disabled # copy-paste template for a new addon
 ├── scripts/
-│   └── merge_addon_routes.py    # merges addons/*.yaml into data/_addons_generated.yaml
+│   ├── merge_addon_routes.py    # merges addons/*.yaml into data/_addons_generated.yaml
+│   ├── seed_agents.py           # upserts the Hermes / OpenClaw / goose agent records
+│   └── generate_env.py          # creates .env from .env.example with random per-deployment secrets
 ├── docker-entrypoint.sh        # runs the addon merge, then execs supervisord
 ├── supervisord.conf            # single gateway process under supervisor
 ├── .env.example                # environment template — copy to .env
@@ -172,33 +180,34 @@ verify).
 ├── Makefile                    # convenience targets
 ├── pyproject.toml              # project metadata + ruff/black config (line-length 88)
 ├── tests/                      # standalone examination harnesses (only dep: requests)
-│   ├── a2a_test_utils.py        # shared helpers (.env load, JWT mint, JSON-RPC, both bridges)
+│   ├── a2a_test_utils.py        # shared helpers (.env load, JWT mint, JSON-RPC, all bridges)
 │   ├── hermes/                  # Hermes-bridge scripts
 │   │   ├── test_hello.py          # smoke: non-streaming message/send
 │   │   ├── test_hello_sse.py      # smoke: streaming over SSE
 │   │   ├── test_gateway_live.py   # E2E suite: 9 checks (health → failure path)
 │   │   ├── test_sse_live.py       # E2E suite: 6 checks (SSE streaming pipeline)
 │   │   └── test_chatbot.py        # interactive REPL with live SSE streaming
-│   └── openclaw/                # OpenClaw-bridge scripts (same five-script shape)
-└── goose/
-│       ├── test_hello.py
-│       ├── test_hello_sse.py
-│       ├── test_gateway_live.py
-│       ├── test_sse_live.py
-│       └── test_chatbot.py
+│   ├── openclaw/                # OpenClaw-bridge scripts (same five-script shape)
+│   └── goose/                   # goose-bridge scripts (same five-script shape)
 ├── openclaw/                   # OpenClaw sibling build context
 │   ├── Dockerfile               # almalinux + Node.js + Python + openclaw CLI
 │   ├── docker-entrypoint.sh     # copies the mounted deploy key into ~/.ssh, fixes perms, execs CMD
 │   ├── openclaw.ini             # supervisor program def for the openclaw process
 │   └── requirements.txt         # openclaw's own Python deps
+├── goose/                      # goose sibling build context
+│   ├── Dockerfile               # debian-slim + pinned goose release binary + supervisor
+│   ├── docker-entrypoint.sh     # server secret + first-start provider config, writes goose-serve.sh
+│   ├── healthcheck.sh           # compose healthcheck (ACP initialize probe)
+│   └── goose.ini                # supervisor program def for `goose serve`
 ├── data/                       # persisted gateway state ➜ /app/data (also holds the generated addon manifest)
 ├── logs/                       # supervisor & gateway logs ➜ /var/log/supervisor
 ├── postgres_data/               # bundled PostgreSQL data dir (profile: postgres)
 ├── postgres_logs/               # bundled PostgreSQL logs (profile: postgres)
-└── www/                        # bundled Hermes / OpenClaw bind-mounts
+└── www/                        # bundled sibling bind-mounts
     ├── hermes/                  # Hermes state (profile: hermes)
     ├── openclaw/                # OpenClaw config/agents/sessions (profile: openclaw)
-    └── projects/                # shared workspace folder (both profiles)
+    ├── goose-workspace/         # goose agent working dir ➜ /workspace (profile: goose)
+    └── projects/                # shared workspace folder (hermes + openclaw)
 ```
 
 `data/`, `logs/`, `postgres_data/`, `postgres_logs/`, `www/`, `.ssh/` (except
@@ -347,7 +356,7 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 `OPENAI_COMPAT_MODEL` once in `.env`, then use `HERMES_MODEL_PROVIDER=openai`
 (Hermes) and `OPENCLAW_MODEL_PROVIDER=openai_compat` (OpenClaw). See `.env.example` for details.
 
-`COMPOSE_PROFILES` is the single switch for all three siblings
+`COMPOSE_PROFILES` is the single switch for all four siblings
 (comma-separated):
 
 | Value | Services started |
@@ -356,22 +365,29 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 | `COMPOSE_PROFILES=postgres` | gateway + bundled Postgres |
 | `COMPOSE_PROFILES=hermes` | gateway + bundled Hermes |
 | `COMPOSE_PROFILES=openclaw` | gateway + bundled OpenClaw |
-| `COMPOSE_PROFILES=hermes,openclaw` | gateway + **both** bundled bridges |
-| `COMPOSE_PROFILES=goose` | gateway + bundled **goose serve** (ACP server) |
-| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose` | gateway + Postgres + all three agent bridges |
-| `COMPOSE_PROFILES=postgres,hermes` | gateway + bundled Postgres + Hermes (`.env.example` default) |
-| `COMPOSE_PROFILES=postgres,hermes,openclaw` | everything bundled |
+| `COMPOSE_PROFILES=goose` | gateway + bundled goose (`goose serve`) |
+| `COMPOSE_PROFILES=hermes,openclaw` | gateway + Hermes + OpenClaw |
+| `COMPOSE_PROFILES=postgres,hermes` | gateway + Postgres + Hermes |
+| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose` | everything bundled (`.env.example` default) |
 
 When a sibling is bundled, keep its host reference pointed at the service
 name: `PG_HOST=postgres`, `HERMES_API_URL=http://hermes:<API_SERVER_PORT>`,
-`OPENCLAW_API_URL=http://openclaw:18789`. When a sibling is external, point
-those at your own instance (e.g. `PG_HOST=host.docker.internal`,
-`HERMES_API_URL=http://host.docker.internal:8642`).
+`OPENCLAW_API_URL=http://openclaw:18789`, `GOOSE_API_URL=http://goose:3284`.
+When a sibling is external, point those at your own instance (e.g.
+`PG_HOST=host.docker.internal`, `HERMES_API_URL=http://host.docker.internal:8642`).
+
+**goose secret.** `goose serve` always requires a shared secret, and
+`GOOSE_SERVER__SECRET_KEY` (goose side) must equal `GOOSE_SECRET_KEY` (gateway
+side). `scripts/generate_env.py` fills both with the same random value. If you
+write `.env` by hand and leave the goose side empty, the goose container
+generates one on first start and prints it (`docker compose logs goose`); copy
+it into both variables and run
+`docker compose up -d --force-recreate a2a-gateway`.
 
 ### Step 2 — Create the bind-mount directories for whichever siblings you bundle
 
 ```bash
-mkdir -p www/hermes www/projects
+mkdir -p www/hermes www/projects www/goose-workspace
 ```
 
 (Optional — Docker creates missing bind-mount folders on first `up`.)
@@ -380,8 +396,11 @@ mkdir -p www/hermes www/projects
 the `openclaw-data` named volume (`OPENCLAW_FOLDER`) → `/root/.openclaw` is
 all OpenClaw config/agents/sessions (a named volume because OpenClaw's config
 writes fail on Docker Desktop bind mounts — on Linux you may set it to a host
-folder such as `./www/openclaw`); `www/projects` (`PROJECTS_FOLDER`) → is a shared
-workspace both bridges can mount.
+folder such as `./www/openclaw`); `www/projects` (`PROJECTS_FOLDER`) is a shared
+workspace Hermes and OpenClaw both mount; `www/goose-workspace`
+(`GOOSE_WORKSPACE_FOLDER`) → `/workspace` is the only host folder the goose
+agent can touch (its config and sessions live in the `goose-data` /
+`goose-share` named volumes).
 
 ### Step 3 — Build
 
@@ -393,13 +412,22 @@ shared SilvaEngine libraries are cloned from **private** GitHub repos under
 ```bash
 docker compose build
 
-# Force a fresh pull of the git modules (after an upstream change):
+# Pick up new commits in the git modules (after an upstream change) without a
+# full rebuild: change MODULE_STAMP, e.g. to the a2a_protocol_plugin commit.
+MODULE_STAMP=<plugin-commit-sha> docker compose build a2a-gateway
+
+# Or rebuild everything from scratch:
 docker compose build --no-cache
 ```
 
+`MODULE_STAMP` is a build arg that only invalidates the layer installing the
+git modules, so the rest of the image stays cached.
+
 The `openclaw` service builds its own image from `./openclaw` (almalinux +
 Node.js + Python + the `openclaw` CLI via `pnpm`) — that build is heavier and
-only runs when the `openclaw` profile is active.
+only runs when the `openclaw` profile is active. The `goose` service builds
+from `./goose` (debian-slim + the goose release binary pinned by
+`GOOSE_VERSION`) when the `goose` profile is active.
 
 ### Step 4 — Start the stack
 
@@ -411,7 +439,7 @@ You can let `.env`'s `COMPOSE_PROFILES` drive which services come up, or pass
 docker compose up -d
 
 # Or start specific profiles explicitly (adds to whatever .env selected):
-docker compose --profile postgres --profile hermes --profile openclaw up -d
+docker compose --profile postgres --profile hermes --profile openclaw --profile goose up -d
 
 # Gateway only, ignoring .env profiles:
 COMPOSE_PROFILES= docker compose up -d a2a-gateway
@@ -425,12 +453,15 @@ docker compose ps
 # a2a-postgres         Up X seconds (healthy)   (if postgres profile)
 # container-hermes     Up X seconds (healthy)   (if hermes profile)
 # container-openclaw   Up X seconds             (if openclaw profile — no healthcheck defined)
+# container-goose      Up X seconds (healthy)   (if goose profile)
 ```
 
 Healthcheck timings: the gateway allows a 40 s `start_period` then probes
 `/health` every 30 s (3 retries); Hermes allows 60 s and probes its own
-`/health`; Postgres uses `pg_isready` every 10 s (5 retries). OpenClaw has no
-compose healthcheck — poll its `/v1/models` endpoint or `make openclaw-up`
+`/health`; Postgres uses `pg_isready` every 10 s (5 retries); goose allows
+30 s, then runs `goose/healthcheck.sh` every 30 s (3 retries) — an ACP
+`initialize` on `/acp` that closes its connection afterwards. OpenClaw
+has no compose healthcheck — poll its `/v1/models` endpoint or `make openclaw-up`
 followed by `docker compose logs -f openclaw` instead.
 
 ### Step 5 — Verify
@@ -522,6 +553,7 @@ for an instant end-to-end check.
 | `hermes` | `HERMES_GATEWAY_PORT` (`8642`) | `API_SERVER_PORT` (`8642`) | OpenAI-compatible API server + `/health` |
 | `hermes` | `HERMES_DASHBOARD_PORT` (`9119`) | `HERMES_DASHBOARD_PORT` (`9119`) | Web dashboard (only when `HERMES_DASHBOARD=1`) |
 | `openclaw` | `OPENCLAW_PORT` (`18789`) | `18789` | OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`) |
+| `goose` | `GOOSE_PORT` (`3284`) | `3284` | `goose serve` ACP endpoint (`/acp`, requires `X-Secret-Key`) |
 | `postgres` | `POSTGRES_PORT` (`5432`) | `5432` | PostgreSQL |
 
 The gateway binds `GATEWAY_HOST` (`0.0.0.0`) inside the container. Host and
@@ -550,9 +582,15 @@ host-side conflict without touching the app config.
 | `./.ssh` (`SSH_HOST_DIR`) | `/root/.ssh-src` (ro) | openclaw | Same deploy key as the main gateway build — entrypoint copies it into a proper `~/.ssh` at container start |
 | `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) | hermes, openclaw | Shared workspace |
 | `/var/run/docker.sock` (`DOCKER_SOCK`) | `/var/run/docker.sock` | hermes | Host Docker access — see [Security notes](#-security-notes) |
+| `./www/goose-workspace` (`GOOSE_WORKSPACE_FOLDER`) | `/workspace` | goose | The goose agent's working directory (`GOOSE_CWD`) |
+| `goose-data` volume (`GOOSE_DATA_FOLDER`) | `/root/.config/goose` | goose | goose `config.yaml` + `server-secret.txt` |
+| `goose-share` volume (`GOOSE_SHARE_FOLDER`) | `/root/.local/share/goose` | goose | goose sessions database + logs |
 
-These are bind mounts, not named volumes, so `docker compose down -v` does not
-erase them — delete the host directories to reset state.
+The host-path rows are bind mounts, so `docker compose down -v` does not erase
+them — delete the host directories to reset state. The named volumes
+(`openclaw-data`, `goose-data`, `goose-share`) **are** removed by
+`docker compose down -v`; for goose that also deletes the generated server
+secret and every goose session (A2A conversations then start fresh).
 
 ---
 
@@ -633,7 +671,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
+| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, `goose`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
 | `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none (env-var fallback for Config) |
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
@@ -641,13 +679,16 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent UUID (seeded into `a2a_agents`) |
 | `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
 | `A2A_OPENCLAW_AGENT_TYPE` | `openclaw` | OpenClaw agent type shorthand |
+| `A2A_GOOSE_AGENT_UUID` | `a2a-goose-agent` | goose agent UUID (seeded into `a2a_agents`) |
+| `A2A_GOOSE_AGENT_NAME` | `Goose Agent` | goose agent display name |
+| `A2A_GOOSE_AGENT_TYPE` | `goose` | goose agent type shorthand |
 | `A2A_STREAM_TIMEOUT` | `120.0` | A2A-side stream timeout, seconds |
 | `A2A_STREAMING_ENABLED` | `true` | Enable streaming via SSE |
 
 Config resolution priority (per-agent): **agent metadata (DB, seeded on
-startup) > setting dict > Config class (env vars above)**. Both agent records
-are auto-seeded — see
-[Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side).
+startup) > setting dict > Config class (env vars above)**. All three agent
+records are auto-seeded — see
+[Running several bridges side by side](#-running-several-bridges-side-by-side).
 
 ### Hermes bridge (a2a_protocol_plugin)
 
@@ -720,41 +761,45 @@ are auto-seeded — see
 | `OPENCLAW_MODEL` | — | Default model id (e.g. `anthropic/claude-opus-4-8`); pins via `openclaw models set` after onboarding |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Pre-set the gateway auth token; set `OPENCLAW_API_KEY` to the same value to skip the post-start copy |
 | `OPENCLAW_CUSTOM_BASE_URL` / `_API_KEY` / `_MODEL_ID` / `_PROVIDER_ID` / `_COMPATIBILITY` | — | Custom provider config (used when `OPENCLAW_MODEL_PROVIDER=custom`) |
+| `GEMINI_API_KEY` / `MISTRAL_API_KEY` / `MOONSHOT_API_KEY` | — | Additional provider keys (shared with Hermes and goose where applicable) |
 
 ### Goose bridge (a2a_protocol_plugin)
 
+The gateway side of the goose integration (`GooseAgentHandler`). It talks to
+`goose serve` over ACP (Agent Client Protocol) at `/acp`. Design notes:
+`a2a_protocol_plugin/docs/GOOSE_INTEGRATION_PLAN.md`.
+
 | Variable | Default | Purpose |
 |---|---|---|
-| `GOOSE_API_URL` | `http://goose:3284` | Where the gateway reaches `goose serve` (ACP over Streamable HTTP + SSE). Keep the bundled value when the `goose` profile is on; point elsewhere when off |
-| `GOOSE_SECRET_KEY` | - | `X-Secret-Key` the gateway sends on every ACP request - MUST equal the goose server's `GOOSE_SERVER__SECRET_KEY` |
-| `GOOSE_CWD` | `/workspace` | Workspace the goose agent operates in |
-| `GOOSE_MCP_SERVERS` | `[]` | MCP servers passed to `session/new` (JSON array) |
-| `GOOSE_PERMISSION_MODE` | `auto_allow` | Bridge-side `session/request_permission` policy: `auto_allow` (sandboxed bundles) / `deny` / `ask` (daemon mode only - emits an `approval` chunk, replies `INPUT_REQUIRED`, resumes on `approval_response`) |
-| `GOOSE_STREAM_TIMEOUT` / `GOOSE_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; ask-mode approval timeout |
+| `GOOSE_API_URL` | `http://goose:3284` | Where the gateway reaches `goose serve`. Keep the bundled value when the `goose` profile is on; point it at your own server when it is off |
+| `GOOSE_SECRET_KEY` | — | Sent as `X-Secret-Key` on every ACP request; **must equal** the goose server's `GOOSE_SERVER__SECRET_KEY` |
+| `GOOSE_CWD` | `/workspace` | Working directory for new goose sessions (inside the goose container) |
+| `GOOSE_MCP_SERVERS` | `[]` | Extra MCP servers passed to each new goose session (JSON array) |
+| `GOOSE_PERMISSION_MODE` | `auto_allow` | How the bridge handles goose tool calls: `auto_allow` (run them — for sandboxed bundles), `deny` (goose asks for each one and the bridge rejects it), or `ask` (long-lived gateway only — the task goes to `INPUT_REQUIRED` until an `approval_response` arrives) |
+| `GOOSE_STREAM_TIMEOUT` / `GOOSE_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; how long `ask` waits before rejecting |
 
 ### Bundled Goose sibling (profile `goose`)
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GOOSE_VERSION` | `1.53.0` | Pinned release downloaded in `./goose/Dockerfile` - bump deliberately and re-run the live tests (the ACP wire format is a draft RFD) |
+| `GOOSE_VERSION` | `1.53.0` | goose release installed by `./goose/Dockerfile`. Bump deliberately and re-run the live tests — goose's ACP-over-HTTP transport is still a draft |
 | `GOOSE_PORT` | `3284` | Published host port for `goose serve` |
 | `GOOSE_CONTAINER_NAME` | `container-goose` | Container name |
-| `GOOSE_SERVER__SECRET_KEY` | generated on first start | goose server secret (REQUIRED - `--dangerously-unauthenticated` is NOT honored in goose 1.53+). Set `GOOSE_SECRET_KEY` (bridge section) to the SAME value. First-start generation prints the value and stores it in the `goose-data` volume (`goose/server-secret.txt`) |
-| `GOOSE_MODEL_PROVIDER` | - | First-start auto-config: `openai_compat` (reuses shared `OPENAI_COMPAT_*`), `anthropic`, `openrouter`, `ollama`, `gemini` |
-| `GOOSE_MODEL` | - | Default model id; goose reads `GOOSE_MODEL` natively at runtime |
-| `GOOSE_MODE` | `auto` | goose's server-side tool approval: `auto` / `approve` / `smart_approve` / `chat` |
-| `GOOSE_DATA_FOLDER` / `GOOSE_SHARE_FOLDER` | `goose-data` / `goose-share` | Config+state / sessions volumes |
-| `GOOSE_WORKSPACE_FOLDER` | `./www/goose-workspace` | Host folder bind-mounted at `/workspace` (the agent's cwd) |
-| `EXTRA_GOOSE_SERVE_ARGS` | - | Extra `goose serve` flags (the builtin `developer` extension is always loaded) |
-| `GEMINI_API_KEY` / `MISTRAL_API_KEY` / `MOONSHOT_API_KEY` | — | Additional provider keys (shared with Hermes where applicable) |
+| `GOOSE_SERVER__SECRET_KEY` | generated on first start | goose server secret — **required** (goose 1.53 ignores `--dangerously-unauthenticated`). Set `GOOSE_SECRET_KEY` to the same value. If empty, the first start generates one, prints it, and saves it to `/root/.config/goose/server-secret.txt` in the `goose-data` volume |
+| `GOOSE_MODEL_PROVIDER` | — | First-start provider setup: `openai_compat` (uses the shared `OPENAI_COMPAT_*`), `anthropic`, `openrouter`, `ollama`, `gemini`. Empty = configure manually with `docker exec -it container-goose goose configure` |
+| `GOOSE_MODEL` | — | Default model id (goose also reads it at every start) |
+| `GOOSE_MODE` | `auto` | goose's own tool-approval mode: `auto`, `approve`, `smart_approve`, `chat` |
+| `GOOSE_DATA_FOLDER` / `GOOSE_SHARE_FOLDER` | `goose-data` / `goose-share` | Volumes for config + secret / sessions database |
+| `GOOSE_WORKSPACE_FOLDER` | `./www/goose-workspace` | Host folder mounted at `/workspace` (the agent's working directory) |
+| `EXTRA_GOOSE_SERVE_ARGS` | — | Extra `goose serve` flags, e.g. `--with-builtin memory` (`developer` is always loaded) |
 
 ### Shared
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into whichever bridge(s) are bundled |
-| `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | — | Ollama Cloud, shared between Hermes (`OLLAMA_BASE_URL`) and OpenClaw (`OLLAMA_HOST`) |
-| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`) and OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`) |
+| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into Hermes and OpenClaw when bundled |
+| `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | — | Ollama Cloud, shared between Hermes (`OLLAMA_BASE_URL`), OpenClaw and goose (`OLLAMA_HOST`) |
+| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`), OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`) and goose (`GOOSE_MODEL_PROVIDER=openai_compat`) |
 
 ### Scaling (`GATEWAY_WORKERS > 1`)
 
@@ -788,12 +833,12 @@ for reference fragments per engine (KGE, RFQ, MCP, AI agent core, ...).
 
 ---
 
-## 🔀 Running Hermes and OpenClaw side by side
+## 🔀 Running several bridges side by side
 
-Both agent bridges are auto-seeded into the `a2a_agents` database table on
-container startup by `scripts/seed_agents.py` (a supervisor program that runs
-once after the gateway is healthy). The seeder reads the agent UUID, name,
-and type from `.env`:
+All three agent bridges (Hermes, OpenClaw, goose) are auto-seeded into the
+`a2a_agents` database table on container startup by `scripts/seed_agents.py`
+(a supervisor program that runs once after the gateway is healthy). The
+seeder reads the agent UUID, name, and type from `.env`:
 
 | Var | Default | Purpose |
 |---|---|---|
@@ -803,6 +848,9 @@ and type from `.env`:
 | `A2A_OPENCLAW_AGENT_UUID` | `a2a-openclaw-agent` | OpenClaw agent record UUID |
 | `A2A_OPENCLAW_AGENT_NAME` | `OpenClaw Agent` | OpenClaw agent display name |
 | `A2A_OPENCLAW_AGENT_TYPE` | `openclaw` | Agent type shorthand |
+| `A2A_GOOSE_AGENT_UUID` | `a2a-goose-agent` | goose agent record UUID |
+| `A2A_GOOSE_AGENT_NAME` | `Goose Agent` | goose agent display name |
+| `A2A_GOOSE_AGENT_TYPE` | `goose` | Agent type shorthand |
 
 The seeder uses the `insertUpdateA2aAgent` GraphQL mutation (upsert), so it's
 safe to run on every container start — existing records are updated, not
@@ -811,12 +859,22 @@ resolution works via `AGENT_TYPE_MAP` without explicit module/class fields.
 `A2A_AI_AGENT_TYPE` / `A2A_DEFAULT_AGENT_UUID` remain as the env-var
 fallback for `a2a_protocol_plugin`'s Config (used when no DB record matches).
 
-With `hermes,openclaw` both bundled, requests route by `agent_uuid`:
+With several bridges bundled, requests route by `agent_uuid`:
 
 - `agent_uuid: a2a-hermes-agent` → `HermesAgentHandler`
 - `agent_uuid: a2a-openclaw-agent` → `OpenClawAgentHandler`
+- `agent_uuid: a2a-goose-agent` → `GooseAgentHandler`
 
-No manual GraphQL mutation is needed — both records exist after `docker compose up -d`.
+No manual GraphQL mutation is needed — all records exist after `docker compose up -d`.
+A record is seeded even when its sibling profile is off; requests to it then
+fail until its `*_API_URL` points at a reachable server.
+
+**goose conversations.** goose keeps the conversation history itself. To
+continue a conversation, send the same client-chosen `metadata.thread_uuid`
+on every turn; the gateway maps it to a goose session per tenant (`Part-Id`),
+so the same `thread_uuid` under another tenant starts a new session instead of
+resuming someone else's. Echoing the reply's `contextId` does **not** resume
+the goose session yet (see [Known limitations](#-known-limitations)).
 
 ---
 
@@ -928,7 +986,7 @@ curl -X POST http://localhost:8765/a2a/a2a_core_graphql \
 This is where agents, tasks, messages and settings are managed as records
 (as opposed to the JSON-RPC protocol surface, which executes them) — including
 registering a second agent to reach the other bridge (see
-[Running Hermes and OpenClaw side by side](#-running-hermes-and-openclaw-side-by-side)).
+[Running several bridges side by side](#-running-several-bridges-side-by-side)).
 
 ### 6. SSE streaming
 
@@ -1038,6 +1096,9 @@ bare private-repo name — already satisfied above.
 | `make rebuild` | clean → build → up |
 | `make hermes-up` / `make hermes-down` | Start/stop the bundled Hermes sibling |
 | `make openclaw-up` / `make openclaw-down` | Start/stop the bundled OpenClaw sibling |
+| `make goose-up` / `make goose-down` | Start/stop the bundled goose sibling |
+| `make goose-test` | Run the goose live E2E suite (`tests/goose/test_gateway_live.py`) |
+| `make goose-chat` | Interactive chatbot through the goose bridge (`tests/goose/test_chatbot.py`) |
 | `make postgres-up` / `make postgres-down` | Start/stop the bundled PostgreSQL sibling |
 
 **Make does not read `.env`.** Two variables are declared with `?=` defaults and
@@ -1065,7 +1126,8 @@ tests/
 ├── a2a_test_utils.py     # shared helpers — not run directly
 ├── hermes/                # test_hello.py, test_hello_sse.py, test_gateway_live.py,
 │                          # test_sse_live.py, test_chatbot.py
-└── openclaw/              # same five scripts, OpenClaw bridge
+├── openclaw/              # same five scripts, OpenClaw bridge
+└── goose/                 # same five scripts, goose bridge
 ```
 
 Each script resolves `.env` from the repo root regardless of your current
@@ -1090,16 +1152,17 @@ pip install requests
 | [tests/openclaw/test_gateway_live.py](tests/openclaw/test_gateway_live.py) | OpenClaw | E2E suite | Same shape as the Hermes suite, plus direct `/v1/models` and `/v1/chat/completions` probes |
 | [tests/openclaw/test_sse_live.py](tests/openclaw/test_sse_live.py) | OpenClaw | E2E suite | SSE streaming pipeline, OpenClaw |
 | [tests/openclaw/test_chatbot.py](tests/openclaw/test_chatbot.py) | OpenClaw | interactive | REPL against the A2A surface with live SSE streaming |
-| [tests/goose/test_hello.py](tests/goose/test_hello.py) | Goose | smoke | Non-streaming `message/send`, prints the reply |
-| [tests/goose/test_hello_sse.py](tests/goose/test_hello_sse.py) | Goose | smoke | One prompt streamed back over SSE |
-| [tests/goose/test_gateway_live.py](tests/goose/test_gateway_live.py) | Goose | E2E suite | 9-step suite: ACP initialize probe, health, agent card, GraphQL ping, message/send, tasks/*, cancel |
-| [tests/goose/test_sse_live.py](tests/goose/test_sse_live.py) | Goose | E2E suite | SSE streaming pipeline end-to-end |
-| [tests/goose/test_chatbot.py](tests/goose/test_chatbot.py) | Goose | interactive | REPL against the A2A surface with live SSE streaming |
-| [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | both | library | Shared helpers — not run directly |
+| [tests/goose/test_hello.py](tests/goose/test_hello.py) | goose | smoke | Non-streaming `message/send`, prints the reply |
+| [tests/goose/test_hello_sse.py](tests/goose/test_hello_sse.py) | goose | smoke | One prompt streamed back over SSE |
+| [tests/goose/test_gateway_live.py](tests/goose/test_gateway_live.py) | goose | E2E suite | Same nine steps as the Hermes suite; step 01 probes goose with an ACP `initialize` on `/acp` |
+| [tests/goose/test_sse_live.py](tests/goose/test_sse_live.py) | goose | E2E suite | 7 checks: the six Hermes SSE checks plus a direct ACP streaming check against `goose serve` |
+| [tests/goose/test_chatbot.py](tests/goose/test_chatbot.py) | goose | interactive | REPL against the A2A surface with live SSE streaming |
+| [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | all | library | Shared helpers — not run directly |
 
 ```bash
 python tests/hermes/test_hello.py
 python tests/openclaw/test_hello.py
+python tests/goose/test_hello.py
 # ...and so on for whichever bridge(s) you have bundled
 ```
 
@@ -1113,10 +1176,11 @@ failure**, so they work as CI gates.
 | `--gateway-url` | all | Override `http://127.0.0.1:$CONTAINER_PORT` |
 | `--hermes-url` | hermes scripts | Override the host-reachable Hermes URL used for health checks |
 | `--openclaw-url` | openclaw scripts | Override the host-reachable OpenClaw URL used for health checks |
+| `--goose-url` | goose scripts | Override the host-reachable goose URL used for the ACP probes |
 | `--token` | all | Use a pre-minted JWT instead of resolving one |
 | `--endpoint-id` | all | Default `a2a` |
 | `--part-id` | all | Default `default` |
-| `--agent-uuid` | all | Default `$A2A_DEFAULT_AGENT_UUID` — pass explicitly when testing the non-default bridge (see [side by side](#-running-hermes-and-openclaw-side-by-side)) |
+| `--agent-uuid` | all | Default `$A2A_DEFAULT_AGENT_UUID` — pass explicitly when testing the non-default bridge (see [side by side](#-running-several-bridges-side-by-side)) |
 | `--prompt` | all but chatbot | Override the test prompt |
 | `--no-health` | hello, hello_sse, sse_live, chatbot | Skip the pre-flight health probes |
 | `--timeout` | hello (300), hello_sse (200), sse_live (200) | Seconds to wait for a reply |
@@ -1130,11 +1194,12 @@ failure**, so they work as CI gates.
 - **Token** — `--token` → `ADMIN_STATIC_TOKEN` → an HS256 JWT minted from
   `JWT_SECRET_KEY` with stdlib HMAC. A non-HS256 `JWT_ALGORITHM` is not
   supported by the minter; pass `--token` or set `ADMIN_STATIC_TOKEN`.
-- **Hermes / OpenClaw URL** — `HERMES_API_URL` / `OPENCLAW_API_URL` are the
-  *in-container* addresses (e.g. `http://hermes:8642`), which the host cannot
-  resolve. The helpers detect a bare service-name host and swap in
-  `127.0.0.1:$HERMES_GATEWAY_PORT` / `127.0.0.1:$OPENCLAW_PORT` for health
-  checks. Actual A2A traffic still goes through the gateway.
+- **Hermes / OpenClaw / goose URL** — `HERMES_API_URL` / `OPENCLAW_API_URL` /
+  `GOOSE_API_URL` are the *in-container* addresses (e.g. `http://hermes:8642`),
+  which the host cannot resolve. The helpers detect a bare service-name host and
+  swap in `127.0.0.1:$HERMES_GATEWAY_PORT` / `127.0.0.1:$OPENCLAW_PORT` /
+  `127.0.0.1:$GOOSE_PORT` for health checks. The goose probes send
+  `GOOSE_SECRET_KEY`. Actual A2A traffic still goes through the gateway.
 - **`.env` parsing** — the loader strips ` #` inline comments (unlike compose),
   so a mis-formatted line may work in the tests and still break the container.
 
@@ -1157,12 +1222,14 @@ make restart
 # Start / stop a single sibling without touching the gateway:
 make hermes-up      /  make hermes-down
 make openclaw-up    /  make openclaw-down
+make goose-up       /  make goose-down
 make postgres-up    /  make postgres-down
 
 # Tail logs for one service:
 docker compose logs -f a2a-gateway
 docker compose logs -f hermes
 docker compose logs -f openclaw
+docker compose logs -f goose
 docker compose logs -f postgres
 
 # Full clean rebuild (drops volumes + dangling images):
@@ -1172,13 +1239,17 @@ make rebuild
 ### After an upstream change (re-pull the git modules)
 
 Because `silvaengine_gateway` / `a2a_protocol_plugin` / `silvaengine_daemon`
-are pip-installed from git at build time, an upstream change requires a
-rebuild with `--no-cache` so the git layer re-clones the latest `@main`:
+are pip-installed from git at build time, Docker reuses the cached install
+layer unless something tells it to re-clone. Change the `MODULE_STAMP` build
+arg (any new value; the plugin commit sha is a good choice) to rebuild only
+that layer:
 
 ```bash
-docker compose build --no-cache
-docker compose up -d --force-recreate
+MODULE_STAMP=<plugin-commit-sha> docker compose build a2a-gateway
+docker compose up -d --force-recreate a2a-gateway
 ```
+
+`docker compose build --no-cache` also works but rebuilds every layer.
 
 There is no version pinning — `@main` is a moving target, so two builds on
 different days can produce different images. Pin a tag or commit in
@@ -1221,6 +1292,16 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
   the host.
 - **Postgres publishes `5432` to the host** by default. Change `POSTGRES_PORT`
   or drop the port mapping on a shared machine.
+- **goose runs tools for real.** With the default `GOOSE_MODE=auto` and
+  `GOOSE_PERMISSION_MODE=auto_allow`, the goose agent runs shell commands and
+  edits files without asking. Its reach is the goose container plus
+  `./www/goose-workspace`; keep it that way (no extra host mounts). If A2A
+  callers are not trusted, use `GOOSE_PERMISSION_MODE=deny` (every tool call
+  is rejected) or goose's own `GOOSE_MODE=chat` (no tools at all).
+- **goose publishes `3284` to the host**, protected only by
+  `GOOSE_SERVER__SECRET_KEY`. Use a long random secret, and drop the port
+  mapping if nothing outside the compose network needs it. The secret is also
+  stored in plain text in the `goose-data` volume (`server-secret.txt`).
 - **RLS is the tenant boundary.** A caller that can set an arbitrary `Part-Id`
   reads that partition's data — treat `Part-Id` as authorization-relevant input
   in any front-end you put in front of this.
@@ -1244,11 +1325,25 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
   [Editing `.env`](#️-editing-env-read-this-first). The test scripts' own loader
   *does*, so a bad line can pass a test and still break the container.
 - **Module versions are unpinned** (`@main`); builds are not reproducible
-  across time. After an upstream change, rebuild with `--no-cache` to re-pull.
-- **Only one bridge is the env-var fallback default at a time** — running
-  both `hermes` and `openclaw` requires a second `a2a_agents` DB record to
-  address the non-default bridge explicitly (see
-  [side by side](#-running-hermes-and-openclaw-side-by-side)).
+  across time. After an upstream change, rebuild with a new `MODULE_STAMP`
+  (or `--no-cache`) to re-pull.
+- **Only one bridge is the env-var fallback default at a time.** Requests that
+  name no agent go to `A2A_DEFAULT_AGENT_UUID`; address the other bridges by
+  their seeded `agent_uuid` (see
+  [side by side](#-running-several-bridges-side-by-side)).
+- **goose: continue a conversation with `metadata.thread_uuid`, not
+  `contextId`.** Echoing the `contextId` from a reply back in
+  `message.contextId` does not reach the bridge, so goose starts a new
+  session. Send the same client-chosen `metadata.thread_uuid` on every turn
+  instead (as `tests/goose/test_chatbot.py` does).
+- **goose: `GOOSE_PERMISSION_MODE=ask` needs a long-lived gateway process.**
+  The pending approval lives in the process holding the goose stream, so it
+  does not work under serverless dispatch.
+- **goose: a cancel that arrives before goose starts the run is a no-op**, and
+  a new message while a goose run is still active cancels that run first.
+- **goose's ACP-over-HTTP transport is a draft.** The bridge is verified
+  against goose 1.53.0 only; re-run `make goose-test` after bumping
+  `GOOSE_VERSION`.
 
 ---
 
@@ -1263,6 +1358,9 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | Auth works in test scripts but not curl | The scripts fall back to a minted JWT from `JWT_SECRET_KEY`; your curl token may just be expired. |
 | A2A tasks hang or error (Hermes) | Confirm Hermes is reachable from the gateway (`HERMES_API_URL`) and `API_SERVER_KEY` matches `HERMES_API_KEY` exactly — including no trailing inline comment. |
 | A2A tasks hang or error (OpenClaw) | Confirm OpenClaw is reachable (`OPENCLAW_API_URL`) and `OPENCLAW_API_KEY` matches its `gateway.auth.token` — see [Step 6](#step-6--openclaw-setup). |
+| goose task fails with "HTTP 401" / authentication | `GOOSE_SECRET_KEY` (gateway) ≠ `GOOSE_SERVER__SECRET_KEY` (goose). If you let goose generate it, read it with `docker exec container-goose cat /root/.config/goose/server-secret.txt`, set both vars, and recreate the gateway. |
+| goose replies are empty or the model errors | No provider configured: set `GOOSE_MODEL_PROVIDER` + its key before the **first** start, or run `docker exec -it container-goose goose configure`. Provider setup is skipped once `config.yaml` exists in `goose-data`. |
+| goose turn starts a new conversation | Send the same `metadata.thread_uuid` on every turn (echoing `contextId` is not enough); also check the `Part-Id` is unchanged and the `goose-share` volume was not reset. |
 | Hermes/OpenClaw auth fails for no visible reason | An inline `#` comment in `.env` was absorbed into the value. Put comments on their own line. |
 | SSE connects but no chunks arrive | Send with `"stream": true`, connect the listener *before* sending, and check `A2A_STREAMING_ENABLED=true`. |
 | `tasks/get` says "Task not found" | Verify the task exists: `SELECT * FROM a2a_tasks WHERE task_id='...'` in the `postgres` container. If not, rebuild with `--no-cache` to pick up an upstream fix. |
@@ -1271,10 +1369,10 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | Bundled Hermes not starting | Ensure `COMPOSE_PROFILES` includes `hermes`, and that `www/hermes` + `www/projects` exist. |
 | Bundled OpenClaw not starting | Ensure `COMPOSE_PROFILES` includes `openclaw`, and that `www/openclaw` + `www/projects` exist. |
 | Bundled Postgres not starting | Ensure `COMPOSE_PROFILES` includes `postgres` and `PG_HOST=postgres`. |
-| Gateway can't reach `postgres` / `hermes` / `openclaw` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` at `host.docker.internal` or a real host. |
-| Test script can't resolve host `hermes` / `openclaw` | Expected — pass `--hermes-url http://127.0.0.1:8642` / `--openclaw-url http://127.0.0.1:18789`, or let the helper auto-swap in the host-published port. |
+| Gateway can't reach `postgres` / `hermes` / `openclaw` / `goose` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` / `GOOSE_API_URL` at `host.docker.internal` or a real host. |
+| Test script can't resolve host `hermes` / `openclaw` / `goose` | Expected — pass `--hermes-url http://127.0.0.1:8642` / `--openclaw-url http://127.0.0.1:18789` / `--goose-url http://127.0.0.1:3284`, or let the helper auto-swap in the host-published port. |
 | `relation "a2a_tasks" does not exist` | Set `initialize_tables=1` and restart the gateway. |
-| Port already in use | Change `CONTAINER_PORT` (gateway), `HERMES_GATEWAY_PORT` / `HERMES_DASHBOARD_PORT` (hermes), `OPENCLAW_PORT` (openclaw), or `POSTGRES_PORT` in `.env`. |
+| Port already in use | Change `CONTAINER_PORT` (gateway), `HERMES_GATEWAY_PORT` / `HERMES_DASHBOARD_PORT` (hermes), `OPENCLAW_PORT` (openclaw), `GOOSE_PORT` (goose), or `POSTGRES_PORT` in `.env`. |
 | Route changes not taking effect | `routes.yaml` is bind-mounted read-only; edit the host file and restart the gateway process (no rebuild). |
 | Addon module doesn't register | Check `docker exec a2a-gateway cat /var/log/supervisor/silvaengine-gateway.log` — a module or route that can't import is logged and skipped, not fatal. Confirm the file is under `./addons/`, ends in `.yaml`/`.yml`, and doesn't end in `.example`/`.disabled`/`.bak`. |
 

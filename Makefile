@@ -1,5 +1,6 @@
 .PHONY: build up down logs gateway-logs status restart shell health clean rebuild dev \
         hermes-up hermes-down openclaw-up openclaw-down goose-up goose-down \
+        goose-test goose-chat \
         postgres-up postgres-down init
 
 # Overridable from the environment, e.g.

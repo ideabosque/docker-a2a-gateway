@@ -5,7 +5,7 @@ Live SSE streaming E2E for the docker-a2a-gateway stack (Goose bridge).
 
 Verifies the full streaming pipeline end-to-end:
 
-  01  goose serve health (/v1/models)
+  01  goose serve health (ACP `initialize` probe on POST /acp)
   02  Gateway health
   03  SSE listener connects to GET /{endpoint_id}/a2a_sse
   04  Streaming message/send -> live token chunks broadcast over SSE
@@ -218,7 +218,7 @@ def main():
     print(f"{C}Goose SSE Live Streaming E2E{RST}")
     print(f"{B}{'=' * 70}{RST}")
     print(f"  gateway:   {cfg['gateway_url']}")
-    print(f"  goose:  {cfg['goose_url']}")
+    print(f"  goose:     {cfg['goose_url']}")
     print(f"  endpoint:  {cfg['endpoint_id']}/{cfg['part_id']}")
     print(f"  agent:     {cfg['agent_uuid']}")
     print(f"  prompt:    {args.prompt}")
@@ -226,8 +226,7 @@ def main():
     if not args.no_health:
         _section("01 — goose serve health")
         o_ok = goose_acp_ok(cfg["goose_url"], cfg["goose_key"])
-        _record("goose /v1/models", o_ok,
-                f"({cfg['goose_url']})" if o_ok else f"({cfg['goose_url']})")
+        _record("goose POST /acp initialize", o_ok, f"({cfg['goose_url']})")
         _section("02 — Gateway health")
         g_ok = health_ok("Gateway", cfg["gateway_url"])
         _record("gateway /health", g_ok)

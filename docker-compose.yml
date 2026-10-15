@@ -29,7 +29,13 @@
 services:
   # ── A2A Gateway (always on) ───────────────────────────────────────────────
   a2a-gateway:
-    build: .
+    build:
+      context: .
+      args:
+        # Cache-buster for the git-installed module layer (see Dockerfile):
+        # set MODULE_STAMP in the environment to the a2a_protocol_plugin
+        # commit sha whenever that repo changes, then `docker compose build`.
+        MODULE_STAMP: ${MODULE_STAMP:-none}
     container_name: ${A2A_GATEWAY_CONTAINER_NAME:-a2a-gateway}
     env_file:
       - .env

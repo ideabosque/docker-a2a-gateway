@@ -29,22 +29,31 @@ ENV GOOSE_VERSION=${GOOSE_VERSION}
 
 # Base OS: supervisor (process management like the openclaw sibling),
 # curl/certs for the release download, python3 for first-start YAML/token
-# generation, git for goose's own runtime git operations.
+# generation, git for goose's own runtime git operations, bzip2 for tarball
+# extraction.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         supervisor \
         ca-certificates \
         curl \
+        bzip2 \
         git \
         python3 \
         && rm -rf /var/lib/apt/lists/*
 
-# Install the pinned goose CLI release. download_cli.sh installs into
-# ~/.local/bin; set GOOSE_INSTALL_PATH? The script honours GOOSE_INSTALL_PATH
-# when provided — bake a stable location into /usr/local/bin on PATH.
-RUN curl -fsSL \
-        "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/download_cli.sh" \
-        | GOOSE_INSTALL_PATH=/usr/local/bin/goose bash \
+# Install the pinned goose CLI release (static binary from the release
+# tarball; TARGETARCH selects x86_64 / aarch64 — matching the release assets
+# goose-x86_64-unknown-linux-gnu.tar.{gz,bz2} / goose-aarch64-unknown-linux-gnu).
+RUN case "$TARGETARCH" in \
+        arm64|aarch64) GOOSE_ARCH="aarch64" ;; \
+        *)             GOOSE_ARCH="x86_64" ;; \
+    esac \
+    && curl -fsSL \
+        "https://github.com/aaif-goose/goose/releases/download/v${GOOSE_VERSION}/goose-${GOOSE_ARCH}-unknown-linux-gnu.tar.bz2" \
+        -o /tmp/goose.tar.bz2 \
+    && tar -xjf /tmp/goose.tar.bz2 -C /tmp \
+    && find /tmp -maxdepth 2 -type f -name goose -exec mv {} /usr/local/bin/goose \; \
     && chmod +x /usr/local/bin/goose \
+    && rm -rf /tmp/goose.tar.bz2 /tmp/goose* \
     && goose --version
 
 ENV GOOSE_CWD=/workspace \
@@ -54,9 +63,9 @@ ENV GOOSE_CWD=/workspace \
 RUN mkdir -p /workspace /var/log/supervisor /root/.config/goose /var/www/logs
 WORKDIR /workspace
 
-# supervisord program for `goose serve`
-ADD goose.ini /etc/supervisor/conf.d/goose.ini
-RUN chmod 755 /etc/supervisor/conf.d/goose.ini
+# supervisord program for `goose serve` (Debian's default include is *.conf)
+ADD goose.ini /etc/supervisor/conf.d/goose.conf
+RUN chmod 755 /etc/supervisor/conf.d/goose.conf
 
 # Entrypoint: first-start provider auto-config from .env, secret-key
 # generation when unset, then exec supervisord (the ONLY place that decides

@@ -42,6 +42,13 @@ Author: bibow
 """
 from __future__ import print_function
 
+# Windows consoles default to a legacy ANSI codepage; goose replies can
+# include emoji, so force UTF-8 with replacement instead of crashing.
+import sys as _sys
+if hasattr(_sys.stdout, "reconfigure"):
+    _sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import json
 import sys

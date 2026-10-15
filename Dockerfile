@@ -54,7 +54,14 @@ ENV PATH="/root/.local/bin:$PATH"
 # their real deps are already satisfied by requirements.txt.
 COPY requirements.txt requirements-modules.txt ./
 
-RUN uv venv /opt/venv && \
+# MODULE_STAMP busts this layer's cache when the git-installed module repos
+# change upstream (the install line itself is unchanged, so Docker would
+# otherwise replay the cached layer and ship a stale plugin). Set it to the
+# a2a_protocol_plugin commit sha you built against, e.g.
+#   MODULE_STAMP=<sha> docker compose build a2a-gateway
+ARG MODULE_STAMP=none
+RUN echo "modules stamp: ${MODULE_STAMP}" > /app/modules-stamp.txt && \
+    uv venv /opt/venv && \
     uv pip install --python /opt/venv/bin/python -r requirements.txt && \
     uv pip install --python /opt/venv/bin/python --no-deps -r requirements-modules.txt
 

@@ -1,8 +1,9 @@
 # =============================================================================
 # docker-a2a-gateway — bundled goose sibling image (compose profile: goose)
 # =============================================================================
-# Runs `goose serve` (ACP over HTTP + WebSocket) so the A2A gateway can bridge
-# tasks to a goose agent (handlers/goose_handler.py -> POST/GET /acp).
+# Runs `goose serve` (ACP — Agent Client Protocol — over HTTP + SSE at /acp)
+# so the A2A gateway can bridge tasks to a goose agent
+# (a2a_protocol_plugin handlers/goose_handler.py -> POST/GET/DELETE /acp).
 #
 # goose is installed as a static binary from the aaif-goose/goose GitHub
 # release (pinned via the GOOSE_VERSION build arg). Provider credentials and
@@ -24,6 +25,10 @@
 FROM debian:bookworm-slim
 
 ARG GOOSE_VERSION=1.53.0
+# Set automatically by BuildKit (amd64 / arm64), but only visible inside the
+# stage when declared here — without this line it is empty and every build
+# downloads the x86_64 binary.
+ARG TARGETARCH
 
 ENV GOOSE_VERSION=${GOOSE_VERSION}
 
@@ -72,6 +77,11 @@ RUN chmod 755 /etc/supervisor/conf.d/goose.conf
 # how the container starts — do not add a `command:` override in compose).
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# Compose healthcheck: ACP initialize probe that also works with a generated
+# secret and closes the connection it opens.
+COPY healthcheck.sh /usr/local/bin/goose-healthcheck.sh
+RUN chmod +x /usr/local/bin/goose-healthcheck.sh
 
 EXPOSE 3284
 

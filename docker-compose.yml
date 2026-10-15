@@ -310,12 +310,11 @@ services:
       - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
     restart: unless-stopped
 
-  # ── Option C: Goose Agent (optional sibling — enable with the `goose` profile)
-  # goose (https://github.com/aaif-goose/goose) running `goose serve` — its ACP
-  # server (Agent Client Protocol over Streamable HTTP + SSE) on port 3284,
-  # which the A2A gateway bridges to (handlers/goose_handler.py). The gateway
-  # reaches it at http://goose:3284 when this profile is active (set
-  # GOOSE_API_URL=http://goose:3284 in .env).
+  # ── Option D: Goose Agent (optional sibling — enable with the `goose` profile)
+  # goose (https://github.com/aaif-goose/goose) running `goose serve`, which
+  # speaks ACP (Agent Client Protocol) over HTTP + SSE at /acp on port 3284.
+  # The gateway's GooseAgentHandler (a2a_protocol_plugin) bridges A2A tasks to
+  # it at http://goose:3284 while this profile is active (GOOSE_API_URL).
   goose:
     build:
       context: ./goose
@@ -329,24 +328,27 @@ services:
     ports:
       - "${GOOSE_PORT:-3284}:3284"
     volumes:
-      # Scoped workspace the goose agent works in (GOOSE_CWD=/workspace).
-      # No host bind mounts beyond ./www by default; tools run with the
-      # container's privileges only.
+      # The goose agent's working directory (GOOSE_CWD=/workspace) — the only
+      # host folder it can reach. goose tools run with the container's
+      # privileges; do not add broader host mounts.
       - ${GOOSE_WORKSPACE_FOLDER:-./www/goose-workspace}:/workspace
       # goose config + server state (config.yaml, server-secret.txt)
       - ${GOOSE_DATA_FOLDER:-goose-data}:/root/.config/goose
       # goose sessions database + logs
       - ${GOOSE_SHARE_FOLDER:-goose-share}:/root/.local/share/goose
     environment:
-      # Server auth — REQUIRED (goose serve always asks for it; X-Secret-Key).
-      # First start without a value generates one, prints it and stores it in
-      # the goose-data volume (goose/server-secret.txt). Then set
-      # GOOSE_SECRET_KEY (gateway side) to the SAME value in .env.
+      # Server secret — REQUIRED; clients send it as X-Secret-Key. If empty,
+      # the first start generates one, prints it and saves it in the
+      # goose-data volume (server-secret.txt). Set GOOSE_SECRET_KEY (gateway
+      # side) to the SAME value in .env.
       - GOOSE_SERVER__SECRET_KEY=${GOOSE_SERVER__SECRET_KEY:-}
-      # First-start provider auto-config (openai_compat | anthropic |
-      # openrouter | ollama | gemini). Shared OPENAI_COMPAT_* endpoint vars.
+      # First-start provider setup (openai_compat | anthropic | openrouter |
+      # ollama | gemini); openai_compat uses the shared OPENAI_COMPAT_* vars.
       - GOOSE_MODEL_PROVIDER=${GOOSE_MODEL_PROVIDER:-}
       - GOOSE_MODEL=${GOOSE_MODEL:-}
+      # goose's own tool-approval mode (auto | approve | smart_approve | chat).
+      # The bridge's GOOSE_PERMISSION_MODE (auto_allow | deny | ask) decides
+      # how permission requests are answered when goose asks.
       - GOOSE_MODE=${GOOSE_MODE:-auto}
       - OPENAI_API_KEY=${OPENAI_COMPAT_API_KEY:-${OPENAI_API_KEY:-}}
       - OPENAI_BASE_URL=${OPENAI_COMPAT_BASE_URL:-${OPENAI_BASE_URL:-}}
@@ -354,17 +356,18 @@ services:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OLLAMA_HOST=${OLLAMA_HOST:-https://ollama.com}
-      # Server-side tool approval policy (goose's own GOOSE_MODE). The A2A
-      # bridge's GOOSE_PERMISSION_MODE (auto_allow|deny|ask) applies on top.
+      # Headless container: no OS keyring, credentials come from env vars.
       - GOOSE_DISABLE_KEYRING=1
       - GOOSE_TELEMETRY_ENABLED=${GOOSE_TELEMETRY_ENABLED:-false}
-      # Extra `goose serve` args via the .env (e.g. --with-builtin developer
-      # is already the bridge default; add more here if needed).
+      # Extra `goose serve` flags, e.g. `--with-builtin memory`
+      # (the `developer` builtin is always loaded).
       - EXTRA_GOOSE_SERVE_ARGS=${EXTRA_GOOSE_SERVE_ARGS:-}
     restart: unless-stopped
     healthcheck:
-      # ACP initialize (public of the gateway surface) — cheap wire probe.
-      test: ["CMD-SHELL", "curl -fsS -X POST http://localhost:3284/acp -H 'Content-Type: application/json' -H \"X-Secret-Key: $${GOOSE_SERVER__SECRET_KEY:-}\" -H 'Acp-Connection-Id: compose-healthcheck' -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":1},\"id\":1}' | grep -q agentCapabilities || exit 1"]
+      # ACP `initialize` must return agentCapabilities; the script falls back
+      # to the generated secret in goose-data and closes its connection
+      # (goose/healthcheck.sh).
+      test: ["CMD", "/usr/local/bin/goose-healthcheck.sh"]
       interval: 30s
       timeout: 10s
       retries: 3

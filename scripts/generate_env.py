@@ -20,6 +20,7 @@ Generated (random, only when not already set):
   JWT_SECRET_KEY, ADMIN_PASSWORD, ADMIN_STATIC_TOKEN,
   API_SERVER_KEY (= HERMES_API_KEY),
   OPENCLAW_GATEWAY_TOKEN (= OPENCLAW_API_KEY),
+  GOOSE_SERVER__SECRET_KEY (= GOOSE_SECRET_KEY),
   PG_PASSWORD (also bootstraps the bundled postgres service directly — see
   docker-compose.yml; there is no separate POSTGRES_PASSWORD to alias),
   HERMES_DASHBOARD_BASIC_AUTH_PASSWORD, HERMES_DASHBOARD_BASIC_AUTH_SECRET
@@ -27,7 +28,7 @@ Generated (random, only when not already set):
 Port offsets (+10 from .env.example defaults to avoid sibling conflicts,
 only applied when the var isn't already set):
   CONTAINER_PORT, POSTGRES_PORT, HERMES_GATEWAY_PORT,
-  HERMES_DASHBOARD_PORT, OPENCLAW_PORT
+  HERMES_DASHBOARD_PORT, OPENCLAW_PORT, GOOSE_PORT
 
 CLI overrides (always win, even over an already-set value):
   --openai-compat-api-key / --openai-compat-base-url / --openai-compat-model
@@ -39,7 +40,8 @@ User must set before first start (unless passed via the flags above):
 Derived (only when missing or blank in .env):
   HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
   When OPENAI_COMPAT_API_KEY is set: HERMES_MODEL_PROVIDER=openai,
-  OPENCLAW_MODEL_PROVIDER=openai_compat, HERMES_MODEL=$OPENAI_COMPAT_MODEL —
+  OPENCLAW_MODEL_PROVIDER=openai_compat, GOOSE_MODEL_PROVIDER=openai_compat,
+  HERMES_MODEL=GOOSE_MODEL=$OPENAI_COMPAT_MODEL —
   so passing the --openai-compat-* flags is all the config a first start needs.
 
 Usage:
@@ -67,6 +69,7 @@ RANDOM_VARS = [
     "ADMIN_PASSWORD",
     "API_SERVER_KEY",
     "OPENCLAW_GATEWAY_TOKEN",
+    "GOOSE_SERVER__SECRET_KEY",
     "PG_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
@@ -76,6 +79,8 @@ RANDOM_VARS = [
 ALIAS_MAP = {
     "HERMES_API_KEY": "API_SERVER_KEY",
     "OPENCLAW_API_KEY": "OPENCLAW_GATEWAY_TOKEN",
+    # goose serve rejects every ACP request whose X-Secret-Key differs.
+    "GOOSE_SECRET_KEY": "GOOSE_SERVER__SECRET_KEY",
 }
 
 # Host-published ports to offset (var -> .env.example default), only when not already set
@@ -85,6 +90,7 @@ PORT_VARS = {
     "HERMES_GATEWAY_PORT": 8642,
     "HERMES_DASHBOARD_PORT": 9119,
     "OPENCLAW_PORT": 18789,
+    "GOOSE_PORT": 3284,
 }
 
 # CLI flag -> env var name, for values that should always override (even an
@@ -187,8 +193,10 @@ def main():
     if compat_key:
         derived["HERMES_MODEL_PROVIDER"] = "openai"
         derived["OPENCLAW_MODEL_PROVIDER"] = "openai_compat"
+        derived["GOOSE_MODEL_PROVIDER"] = "openai_compat"
         if compat_model:
             derived["HERMES_MODEL"] = compat_model
+            derived["GOOSE_MODEL"] = compat_model
 
     # Random tokens — reuse the existing value if already set, so a repeat run
     # only fills in what's actually missing.
@@ -302,9 +310,10 @@ def main():
         print()
 
     if compat_key:
-        print("Hermes and OpenClaw are wired to OPENAI_COMPAT_* "
-              "(HERMES_MODEL_PROVIDER=openai, OPENCLAW_MODEL_PROVIDER=openai_compat)"
-              " unless .env already chose otherwise.")
+        print("Hermes, OpenClaw and goose are wired to OPENAI_COMPAT_* "
+              "(HERMES_MODEL_PROVIDER=openai, OPENCLAW_MODEL_PROVIDER=openai_compat,"
+              " GOOSE_MODEL_PROVIDER=openai_compat) unless .env already chose"
+              " otherwise.")
         print()
     else:
         print("Before first start, edit .env and set LLM credentials:")

@@ -71,6 +71,9 @@ services:
       openclaw:
         condition: service_started
         required: false
+      goose:
+        condition: service_started
+        required: false
     restart: unless-stopped
     healthcheck:
       # /health is public (no auth) — see silvaengine_gateway routes.
@@ -301,10 +304,74 @@ services:
       - OPENAI_COMPAT_MODEL=${OPENAI_COMPAT_MODEL:-}
     restart: unless-stopped
 
+  # ── Option C: Goose Agent (optional sibling — enable with the `goose` profile)
+  # goose (https://github.com/aaif-goose/goose) running `goose serve` — its ACP
+  # server (Agent Client Protocol over Streamable HTTP + SSE) on port 3284,
+  # which the A2A gateway bridges to (handlers/goose_handler.py). The gateway
+  # reaches it at http://goose:3284 when this profile is active (set
+  # GOOSE_API_URL=http://goose:3284 in .env).
+  goose:
+    build:
+      context: ./goose
+      dockerfile: Dockerfile
+      args:
+        GOOSE_VERSION: ${GOOSE_VERSION:-1.53.0}
+    container_name: ${GOOSE_CONTAINER_NAME:-container-goose}
+    profiles: ["goose"]
+    env_file:
+      - .env
+    ports:
+      - "${GOOSE_PORT:-3284}:3284"
+    volumes:
+      # Scoped workspace the goose agent works in (GOOSE_CWD=/workspace).
+      # No host bind mounts beyond ./www by default; tools run with the
+      # container's privileges only.
+      - ${GOOSE_WORKSPACE_FOLDER:-./www/goose-workspace}:/workspace
+      # goose config + server state (config.yaml, server-secret.txt)
+      - ${GOOSE_DATA_FOLDER:-goose-data}:/root/.config/goose
+      # goose sessions database + logs
+      - ${GOOSE_SHARE_FOLDER:-goose-share}:/root/.local/share/goose
+    environment:
+      # Server auth — REQUIRED (goose serve always asks for it; X-Secret-Key).
+      # First start without a value generates one, prints it and stores it in
+      # the goose-data volume (goose/server-secret.txt). Then set
+      # GOOSE_SECRET_KEY (gateway side) to the SAME value in .env.
+      - GOOSE_SERVER__SECRET_KEY=${GOOSE_SERVER__SECRET_KEY:-}
+      # First-start provider auto-config (openai_compat | anthropic |
+      # openrouter | ollama | gemini). Shared OPENAI_COMPAT_* endpoint vars.
+      - GOOSE_MODEL_PROVIDER=${GOOSE_MODEL_PROVIDER:-}
+      - GOOSE_MODEL=${GOOSE_MODEL:-}
+      - GOOSE_MODE=${GOOSE_MODE:-auto}
+      - OPENAI_API_KEY=${OPENAI_COMPAT_API_KEY:-${OPENAI_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_COMPAT_BASE_URL:-${OPENAI_BASE_URL:-}}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-https://ollama.com}
+      # Server-side tool approval policy (goose's own GOOSE_MODE). The A2A
+      # bridge's GOOSE_PERMISSION_MODE (auto_allow|deny|ask) applies on top.
+      - GOOSE_DISABLE_KEYRING=1
+      - GOOSE_TELEMETRY_ENABLED=${GOOSE_TELEMETRY_ENABLED:-false}
+      # Extra `goose serve` args via the .env (e.g. --with-builtin developer
+      # is already the bridge default; add more here if needed).
+      - EXTRA_GOOSE_SERVE_ARGS=${EXTRA_GOOSE_SERVE_ARGS:-}
+    restart: unless-stopped
+    healthcheck:
+      # ACP initialize (public of the gateway surface) — cheap wire probe.
+      test: ["CMD-SHELL", "curl -fsS -X POST http://localhost:3284/acp -H 'Content-Type: application/json' -H \"X-Secret-Key: $${GOOSE_SERVER__SECRET_KEY:-}\" -H 'Acp-Connection-Id: compose-healthcheck' -d '{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":1},\"id\":1}' | grep -q agentCapabilities || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 # A single default bridge network lets the gateway reach the `hermes` /
-# `openclaw` services by name (http://hermes:8642, http://openclaw:18789)
-# when their respective profiles are active.
+# `openclaw` / `goose` services by name (http://hermes:8642,
+# http://openclaw:18789, http://goose:3284) when their respective profiles
+# are active.
 
 volumes:
   # OpenClaw config/agents/sessions (see the openclaw service's volumes).
   openclaw-data:
+  # Goose agent config + server state, sessions db, and scoped workspace.
+  goose-data:
+  goose-share:

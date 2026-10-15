@@ -1,5 +1,5 @@
 #!/opt/venv/bin/python
-"""Seed default a2a_agents records for both Hermes and OpenClaw bridges.
+"""Seed default a2a_agents records for the Hermes, OpenClaw and Goose bridges.
 
 Runs after the gateway is healthy. Idempotent — uses insertUpdateA2aAgent
 (upsert), so it's safe to run on every container start.
@@ -7,6 +7,7 @@ Runs after the gateway is healthy. Idempotent — uses insertUpdateA2aAgent
 Registers:
   - a2a-hermes-agent  → agent_type: "hermes"
   - a2a-openclaw-agent → agent_type: "openclaw"
+  - a2a-goose-agent   → agent_type: "goose"
 
 Both with metadata containing agent_type so the A2A executor resolves
 the handler via AGENT_TYPE_MAP without relying on env-var fallbacks.
@@ -54,6 +55,13 @@ AGENTS = [
         "agentName": os.environ.get("A2A_OPENCLAW_AGENT_NAME", "OpenClaw Agent"),
         "metadata": {
             "agent_type": os.environ.get("A2A_OPENCLAW_AGENT_TYPE", "openclaw"),
+        },
+    },
+    {
+        "agentId": os.environ.get("A2A_GOOSE_AGENT_UUID", "a2a-goose-agent"),
+        "agentName": os.environ.get("A2A_GOOSE_AGENT_NAME", "Goose Agent"),
+        "metadata": {
+            "agent_type": os.environ.get("A2A_GOOSE_AGENT_TYPE", "goose"),
         },
     },
 ]

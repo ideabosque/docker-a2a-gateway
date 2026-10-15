@@ -152,13 +152,17 @@ def _host_openclaw_url(env: Dict[str, str]) -> str:
     return _host_service_url(env, "OPENCLAW_API_URL", "OPENCLAW_PORT", "18789")
 
 
+def _host_goose_url(env: Dict[str, str]) -> str:
+    return _host_service_url(env, "GOOSE_API_URL", "GOOSE_PORT", "3284")
+
+
 def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     """Build a config dict from .env + explicit overrides.
 
     Accepted overrides: gateway_url, hermes_url, openclaw_url, token,
     endpoint_id, part_id, agent_uuid, bridge.
 
-    ``hermes_url`` / ``openclaw_url`` default to HOST-reachable URLs
+    ``hermes_url`` / ``openclaw_url`` / ``goose_url`` default to HOST-reachable URLs
     (127.0.0.1 + the host-published port), not the in-container
     HERMES_API_URL / OPENCLAW_API_URL (which use docker service names the
     host can't resolve). The gateway itself still uses HERMES_API_URL /
@@ -176,6 +180,7 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
                    f"http://127.0.0.1:{container_port}").rstrip("/")
     hermes_url = (overrides.get("hermes_url") or _host_hermes_url(env)).rstrip("/")
     openclaw_url = (overrides.get("openclaw_url") or _host_openclaw_url(env)).rstrip("/")
+    goose_url = (overrides.get("goose_url") or _host_goose_url(env)).rstrip("/")
     endpoint_id = overrides.get("endpoint_id") or env.get("endpoint_id", "a2a")
     part_id = overrides.get("part_id") or env.get("part_id", "default")
     bridge = overrides.get("bridge")
@@ -183,6 +188,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         default_agent = env.get("A2A_OPENCLAW_AGENT_UUID", "a2a-openclaw-agent")
     elif bridge == "hermes":
         default_agent = env.get("A2A_HERMES_AGENT_UUID", "a2a-hermes-agent")
+    elif bridge == "goose":
+        default_agent = env.get("A2A_GOOSE_AGENT_UUID", "a2a-goose-agent")
     else:
         default_agent = env.get("A2A_DEFAULT_AGENT_UUID", "a2a-hermes-agent")
     agent_uuid = overrides.get("agent_uuid") or default_agent
@@ -193,6 +200,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         "hermes_key": env.get("HERMES_API_KEY", ""),
         "openclaw_url": openclaw_url,
         "openclaw_key": env.get("OPENCLAW_API_KEY", ""),
+        "goose_url": goose_url,
+        "goose_key": env.get("GOOSE_SECRET_KEY", ""),
         "endpoint_id": endpoint_id,
         "part_id": part_id,
         "agent_uuid": agent_uuid,
@@ -255,6 +264,33 @@ def openclaw_chat_ok(openclaw_url: str, openclaw_key: str = "",
             timeout=timeout,
         )
         return r.status_code == 200
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# goose ACP server probe (goose serve — ACP over Streamable HTTP)
+# ---------------------------------------------------------------------------
+def goose_acp_ok(goose_url: str, goose_key: str = "",
+                 timeout: int = 15) -> bool:
+    """POST a minimal ACP initialize; expect HTTP 200 with agentCapabilities."""
+    try:
+        r = requests.post(
+            f"{goose_url}/acp",
+            json={
+                "jsonrpc": "2.0", "method": "initialize",
+                "params": {"protocolVersion": 1}, "id": 1,
+            },
+            headers={
+                "Content-Type": "application/json",
+                "X-Secret-Key": goose_key or "probe",
+                "Acp-Connection-Id": "a2a-test-probe",
+            },
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return False
+        return "agentCapabilities" in (r.json().get("result") or {})
     except Exception:
         return False
 
@@ -366,7 +402,7 @@ __all__ = [
     "G", "R", "C", "Y", "B", "D", "RST",
     "PROJECT_DIR", "ENV_FILE",
     "load_env", "mint_jwt", "resolve_token", "resolve_config",
-    "health_ok", "openclaw_models_ok", "openclaw_chat_ok",
+    "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
 ]

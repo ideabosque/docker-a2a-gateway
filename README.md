@@ -11,6 +11,9 @@ both** of two optional agent backends over HTTP + SSE:
   OpenAI-compatible API server, bundled via the `hermes` compose profile.
 - **[OpenClaw](https://github.com/openclaw)** — a Node.js + Python
   OpenAI-compatible gateway, bundled via the `openclaw` compose profile.
+- **[goose](https://github.com/aaif-goose/goose)** - a local AI agent run as
+  `goose serve` (ACP - the Agent Client Protocol - over Streamable HTTP +
+  SSE), bundled via the `goose` compose profile.
 
 State persists to a bundled **PostgreSQL** backend (DynamoDB is not supported by
 this image). This repository **consolidates** what were previously two separate
@@ -177,6 +180,7 @@ verify).
 │   │   ├── test_sse_live.py       # E2E suite: 6 checks (SSE streaming pipeline)
 │   │   └── test_chatbot.py        # interactive REPL with live SSE streaming
 │   └── openclaw/                # OpenClaw-bridge scripts (same five-script shape)
+└── goose/
 │       ├── test_hello.py
 │       ├── test_hello_sse.py
 │       ├── test_gateway_live.py
@@ -353,6 +357,8 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 | `COMPOSE_PROFILES=hermes` | gateway + bundled Hermes |
 | `COMPOSE_PROFILES=openclaw` | gateway + bundled OpenClaw |
 | `COMPOSE_PROFILES=hermes,openclaw` | gateway + **both** bundled bridges |
+| `COMPOSE_PROFILES=goose` | gateway + bundled **goose serve** (ACP server) |
+| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose` | gateway + Postgres + all three agent bridges |
 | `COMPOSE_PROFILES=postgres,hermes` | gateway + bundled Postgres + Hermes (`.env.example` default) |
 | `COMPOSE_PROFILES=postgres,hermes,openclaw` | everything bundled |
 
@@ -503,7 +509,8 @@ docker compose up -d --force-recreate a2a-gateway
 
 See [Using the A2A surface](#-using-the-a2a-surface) below for the full
 protocol reference, or run `python tests/hermes/test_hello.py` /
-`python tests/openclaw/test_hello.py` for an instant end-to-end check.
+`python tests/openclaw/test_hello.py` (or `python tests/goose/test_hello.py`)
+for an instant end-to-end check.
 
 ---
 
@@ -713,6 +720,32 @@ are auto-seeded — see
 | `OPENCLAW_MODEL` | — | Default model id (e.g. `anthropic/claude-opus-4-8`); pins via `openclaw models set` after onboarding |
 | `OPENCLAW_GATEWAY_TOKEN` | — | Pre-set the gateway auth token; set `OPENCLAW_API_KEY` to the same value to skip the post-start copy |
 | `OPENCLAW_CUSTOM_BASE_URL` / `_API_KEY` / `_MODEL_ID` / `_PROVIDER_ID` / `_COMPATIBILITY` | — | Custom provider config (used when `OPENCLAW_MODEL_PROVIDER=custom`) |
+
+### Goose bridge (a2a_protocol_plugin)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GOOSE_API_URL` | `http://goose:3284` | Where the gateway reaches `goose serve` (ACP over Streamable HTTP + SSE). Keep the bundled value when the `goose` profile is on; point elsewhere when off |
+| `GOOSE_SECRET_KEY` | - | `X-Secret-Key` the gateway sends on every ACP request - MUST equal the goose server's `GOOSE_SERVER__SECRET_KEY` |
+| `GOOSE_CWD` | `/workspace` | Workspace the goose agent operates in |
+| `GOOSE_MCP_SERVERS` | `[]` | MCP servers passed to `session/new` (JSON array) |
+| `GOOSE_PERMISSION_MODE` | `auto_allow` | Bridge-side `session/request_permission` policy: `auto_allow` (sandboxed bundles) / `deny` / `ask` (daemon mode only - emits an `approval` chunk, replies `INPUT_REQUIRED`, resumes on `approval_response`) |
+| `GOOSE_STREAM_TIMEOUT` / `GOOSE_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; ask-mode approval timeout |
+
+### Bundled Goose sibling (profile `goose`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GOOSE_VERSION` | `1.53.0` | Pinned release downloaded in `./goose/Dockerfile` - bump deliberately and re-run the live tests (the ACP wire format is a draft RFD) |
+| `GOOSE_PORT` | `3284` | Published host port for `goose serve` |
+| `GOOSE_CONTAINER_NAME` | `container-goose` | Container name |
+| `GOOSE_SERVER__SECRET_KEY` | generated on first start | goose server secret (REQUIRED - `--dangerously-unauthenticated` is NOT honored in goose 1.53+). Set `GOOSE_SECRET_KEY` (bridge section) to the SAME value. First-start generation prints the value and stores it in the `goose-data` volume (`goose/server-secret.txt`) |
+| `GOOSE_MODEL_PROVIDER` | - | First-start auto-config: `openai_compat` (reuses shared `OPENAI_COMPAT_*`), `anthropic`, `openrouter`, `ollama`, `gemini` |
+| `GOOSE_MODEL` | - | Default model id; goose reads `GOOSE_MODEL` natively at runtime |
+| `GOOSE_MODE` | `auto` | goose's server-side tool approval: `auto` / `approve` / `smart_approve` / `chat` |
+| `GOOSE_DATA_FOLDER` / `GOOSE_SHARE_FOLDER` | `goose-data` / `goose-share` | Config+state / sessions volumes |
+| `GOOSE_WORKSPACE_FOLDER` | `./www/goose-workspace` | Host folder bind-mounted at `/workspace` (the agent's cwd) |
+| `EXTRA_GOOSE_SERVE_ARGS` | - | Extra `goose serve` flags (the builtin `developer` extension is always loaded) |
 | `GEMINI_API_KEY` / `MISTRAL_API_KEY` / `MOONSHOT_API_KEY` | — | Additional provider keys (shared with Hermes where applicable) |
 
 ### Shared
@@ -1057,6 +1090,11 @@ pip install requests
 | [tests/openclaw/test_gateway_live.py](tests/openclaw/test_gateway_live.py) | OpenClaw | E2E suite | Same shape as the Hermes suite, plus direct `/v1/models` and `/v1/chat/completions` probes |
 | [tests/openclaw/test_sse_live.py](tests/openclaw/test_sse_live.py) | OpenClaw | E2E suite | SSE streaming pipeline, OpenClaw |
 | [tests/openclaw/test_chatbot.py](tests/openclaw/test_chatbot.py) | OpenClaw | interactive | REPL against the A2A surface with live SSE streaming |
+| [tests/goose/test_hello.py](tests/goose/test_hello.py) | Goose | smoke | Non-streaming `message/send`, prints the reply |
+| [tests/goose/test_hello_sse.py](tests/goose/test_hello_sse.py) | Goose | smoke | One prompt streamed back over SSE |
+| [tests/goose/test_gateway_live.py](tests/goose/test_gateway_live.py) | Goose | E2E suite | 9-step suite: ACP initialize probe, health, agent card, GraphQL ping, message/send, tasks/*, cancel |
+| [tests/goose/test_sse_live.py](tests/goose/test_sse_live.py) | Goose | E2E suite | SSE streaming pipeline end-to-end |
+| [tests/goose/test_chatbot.py](tests/goose/test_chatbot.py) | Goose | interactive | REPL against the A2A surface with live SSE streaming |
 | [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | both | library | Shared helpers — not run directly |
 
 ```bash

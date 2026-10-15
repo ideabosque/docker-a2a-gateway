@@ -1,5 +1,6 @@
 .PHONY: build up down logs gateway-logs status restart shell health clean rebuild dev \
-        hermes-up hermes-down openclaw-up openclaw-down postgres-up postgres-down init
+        hermes-up hermes-down openclaw-up openclaw-down goose-up goose-down \
+        postgres-up postgres-down init
 
 # Overridable from the environment, e.g.
 #   A2A_GATEWAY_CONTAINER_NAME=my-gateway make shell
@@ -78,6 +79,23 @@ openclaw-up:
 # Stop the bundled OpenClaw sibling (gateway stays up)
 openclaw-down:
 	docker compose --profile openclaw stop openclaw
+
+# Bring up the bundled Goose sibling service (profile: goose) — `goose serve`
+# ACP-over-HTTP server the gateway bridges to at http://goose:3284.
+goose-up:
+	docker compose --profile goose up -d goose
+
+# Stop the bundled Goose sibling (gateway stays up)
+goose-down:
+	docker compose --profile goose stop goose
+
+# Live E2E suite against the running gateway + goose sibling
+goose-test:
+	python tests/goose/test_gateway_live.py
+
+# Interactive chatbot through the goose bridge (SSE streaming)
+goose-chat:
+	python tests/goose/test_chatbot.py
 
 # Bring up the bundled PostgreSQL sibling service (profile: postgres)
 postgres-up:

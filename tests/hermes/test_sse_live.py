@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from a2a_test_utils import (
     B, C, D, G, R, Y, RST,
-    is_reasoning_artifact,
+    is_reasoning_artifact, StreamSections,
     extract_text, jsonrpc_error, load_env, resolve_config,
     health_ok, message_send_params, send_a2a, unwrap_response,
 )
@@ -61,6 +61,7 @@ class SSEListener:
         self.thread = None
         self.current_task_id = None
         self.full_text = ""
+        self.sections = StreamSections(response_color="")
         self.chunks_seen = 0
         self.completed = False
         self.errored = False
@@ -111,19 +112,20 @@ class SSEListener:
                                     active_turn = self._active_turn
                                     local_text = ""
                                 artifact = event.get("artifact", {})
-                                # Reasoning chunks are tagged in artifact.metadata and
-                                # are not part of the answer; skip them.
-                                if (isinstance(artifact, dict) and artifact.get("text")
-                                        and not is_reasoning_artifact(artifact)):
+                                # Reasoning (tagged in artifact.metadata) prints in its own
+                                # tagged section; the answer is accumulated separately.
+                                if isinstance(artifact, dict) and artifact.get("text"):
                                     text = artifact["text"]
-                                    if local_text and (
+                                    if is_reasoning_artifact(artifact):
+                                        self.sections.reasoning_chunk(text)
+                                    elif local_text and (
                                         text == local_text
                                         or text.startswith(local_text)
                                         or local_text.startswith(text)
                                     ):
-                                        pass
+                                        pass  # accumulated / duplicate chunk
                                     else:
-                                        self.chunks_seen += 1
+                                        self.sections.response_chunk(text)
                                         local_text += text
                                         self.full_text = local_text
                         if etype in ("task_status", "status"):
@@ -154,6 +156,7 @@ class SSEListener:
     def set_task(self, task_id):
         self.current_task_id = task_id
         self.full_text = ""
+        self.sections.reset()
         self.chunks_seen = 0
         self.completed = False
         self.errored = False
@@ -193,6 +196,8 @@ def main():
     parser.add_argument("--no-health", action="store_true")
     parser.add_argument("--timeout", type=int, default=200,
                         help="Max seconds to wait for the stream to complete")
+    parser.add_argument("--hide-reasoning", action="store_true",
+                        help="Hide model reasoning (sends metadata.show_reasoning=false, so the gateway does not stream it)")
     args = parser.parse_args()
 
     env = load_env()
@@ -243,12 +248,14 @@ def main():
     params = message_send_params(
         args.prompt, cfg["agent_uuid"], task_id,
         task_type="hermes_sse_live", stream=True,
+        show_reasoning=False if args.hide_reasoning else None,
     )
     r = send_a2a(
         cfg["gateway_url"], cfg["token"], cfg["endpoint_id"], cfg["part_id"],
         "message/send", params, request_id=f"sse-{task_id}", timeout=240,
     )
     sse.done.wait(timeout=args.timeout)
+    sse.sections.close()
     print()
 
     streamed_text = sse.full_text

@@ -55,6 +55,11 @@ from pathlib import Path
 
 import requests
 
+# tests/hermes/ -> tests/ (where a2a_test_utils.py lives)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from a2a_test_utils import is_reasoning_artifact, StreamSections  # noqa: E402
+
 __author__ = "bibow"
 
 # This file lives at tests/hermes/test_chatbot.py — two levels below the
@@ -169,6 +174,7 @@ class SSEListener:
         self.thread = None
         self.current_task_id = None
         self.full_text = ""
+        self.sections = StreamSections(response_color=Y)
         self.done = threading.Event()
         self._turn = 0
         self._active_turn = -1
@@ -216,25 +222,20 @@ class SSEListener:
                                     local_text = ""
 
                                 artifact = event.get("artifact", {})
-                                # Reasoning chunks are tagged in artifact.metadata
-                                # and are not part of the answer; skip them.
-                                meta = artifact.get("metadata") if isinstance(artifact, dict) else None
-                                is_reasoning = isinstance(meta, dict) and any(
-                                    "reason" in str(v).lower() for v in meta.values()
-                                )
-                                if is_reasoning:
-                                    pass
-                                elif isinstance(artifact, dict) and artifact.get("text"):
+                                # Reasoning (tagged in artifact.metadata) prints in its own
+                                # tagged section; the answer is accumulated separately.
+                                if isinstance(artifact, dict) and artifact.get("text"):
                                     text = artifact["text"]
-                                    # Skip accumulated / duplicate chunks
-                                    if local_text and (
+                                    if is_reasoning_artifact(artifact):
+                                        self.sections.reasoning_chunk(text)
+                                    elif local_text and (
                                         text == local_text
                                         or text.startswith(local_text)
                                         or local_text.startswith(text)
                                     ):
-                                        pass
+                                        pass  # accumulated / duplicate chunk
                                     else:
-                                        print(f"{Y}{text}{RST}", end="", flush=True)
+                                        self.sections.response_chunk(text)
                                         local_text += text
                                         self.full_text = local_text
 
@@ -265,6 +266,7 @@ class SSEListener:
     def set_task(self, task_id):
         self.current_task_id = task_id
         self.full_text = ""
+        self.sections.reset()
         self.done.clear()
         self._turn += 1
         self._active_turn = self._turn
@@ -278,7 +280,7 @@ class SSEListener:
 # ---------------------------------------------------------------------------
 def send_message(gateway_url, token, endpoint_id, part_id, text, task_id,
                  agent_uuid, system_prompt=None, conversation_history=None,
-                 thread_uuid=None):
+                 thread_uuid=None, show_reasoning=None):
     """Send a message/send and return the HTTP response."""
     parts = [{"text": text}]
 
@@ -294,6 +296,8 @@ def send_message(gateway_url, token, endpoint_id, part_id, text, task_id,
         metadata["conversation_history"] = conversation_history
     if thread_uuid:
         metadata["thread_uuid"] = thread_uuid
+    if show_reasoning is not None:
+        metadata["show_reasoning"] = bool(show_reasoning)
 
     body = {
         "jsonrpc": "2.0",
@@ -370,6 +374,8 @@ def main():
                         help="Disable SSE streaming; use HTTP response only")
     parser.add_argument("--no-health", action="store_true",
                         help="Skip startup health checks")
+    parser.add_argument("--hide-reasoning", action="store_true",
+                        help="Hide model reasoning (sends metadata.show_reasoning=false, so the gateway does not stream it)")
     args = parser.parse_args()
 
     env = load_env()
@@ -442,11 +448,13 @@ def main():
             system_prompt=args.system,
             conversation_history=conversation_history if conversation_history else None,
             thread_uuid=thread_uuid,
+            show_reasoning=False if args.hide_reasoning else None,
         )
 
         streamed_text = ""
         if sse:
             sse.done.wait(timeout=30)
+            sse.sections.close()
             streamed_text = sse.full_text
 
         if not streamed_text:

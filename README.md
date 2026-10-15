@@ -684,6 +684,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | `A2A_GOOSE_AGENT_TYPE` | `goose` | goose agent type shorthand |
 | `A2A_STREAM_TIMEOUT` | `120.0` | A2A-side stream timeout, seconds |
 | `A2A_STREAMING_ENABLED` | `true` | Enable streaming via SSE |
+| `A2A_SHOW_REASONING` | `true` | Stream model reasoning as tagged SSE chunks (`artifact.metadata.data_format = "reasoning"`), separate from the answer. Override per agent (agent metadata `show_reasoning`) or per request (`params.metadata.show_reasoning`); see [Reasoning](#reasoning) |
 
 Config resolution priority (per-agent): **agent metadata (DB, seeded on
 startup) > setting dict > Config class (env vars above)**. All three agent
@@ -1010,6 +1011,32 @@ Responses may arrive wrapped in an API-Gateway-style envelope
 (`{"body": "<json string>"}`); `unwrap_response()` in
 [tests/a2a_test_utils.py](tests/a2a_test_utils.py) handles both forms.
 
+### Reasoning
+
+When the model reasons, the gateway streams that reasoning as its own SSE
+chunks, tagged `artifact.metadata.data_format = "reasoning"` (core-engine
+frames carry an `rs#` marker instead). It is never part of the answer text;
+the final reply carries it separately as `metadata.reasoning`.
+
+| Bridge | Source of reasoning |
+|---|---|
+| goose | `agent_thought_chunk` updates |
+| Hermes | `reasoning.delta` events (a `reasoning.available` that only repeats the answer is dropped) |
+| OpenClaw | `delta.reasoning_content` / `delta.reasoning` — OpenClaw sends none today |
+| core engine | `rs#`-tagged frames from the LLM handler (enable with the agent's model `thinking` / `reasoning` setting) |
+
+It is **on by default**. Turn it off globally with `A2A_SHOW_REASONING=false`,
+per agent with `show_reasoning: false` in the agent metadata, or per request
+with `params.metadata.show_reasoning: false`; the request wins over the agent,
+the agent over the global setting. When off, reasoning is neither streamed nor
+returned. Whether a backend produces reasoning at all is its own setting
+(e.g. Hermes `show_reasoning` / `reasoning_effort`).
+
+The test scripts print reasoning in tagged sections
+(`>>> REASONING START` … `<<< REASONING END`, then `>>> RESPONSE START` …
+`<<< RESPONSE END`), like `silvaengine_gateway`'s `chat_websocket.py`;
+pass `--hide-reasoning` to send `show_reasoning: false`.
+
 ---
 
 ## 🗄️ Persistence & multi-tenancy
@@ -1190,6 +1217,7 @@ failure**, so they work as CI gates.
 | `--system` | chatbot | System prompt for the session |
 | `--no-sse` | chatbot | HTTP-only mode, no streaming |
 | `--skip-cancel` | gateway_live | Skip step 08 (`tasks/cancel`) |
+| `--hide-reasoning` | hello_sse, sse_live, chatbot | Send `metadata.show_reasoning=false`; without it, reasoning prints in tagged `REASONING` sections (see [Reasoning](#reasoning)) |
 
 ### How they resolve config
 

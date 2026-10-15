@@ -324,8 +324,13 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
                          stream: bool = True,
                          system_prompt: Optional[str] = None,
                          conversation_history: Optional[list] = None,
-                         thread_uuid: Optional[str] = None) -> Dict[str, Any]:
-    """Build params for A2A message/send."""
+                         thread_uuid: Optional[str] = None,
+                         show_reasoning: Optional[bool] = None) -> Dict[str, Any]:
+    """Build params for A2A message/send.
+
+    ``show_reasoning`` (when not None) is sent as ``metadata.show_reasoning``,
+    the per-request override of the gateway's A2A_SHOW_REASONING (default on).
+    """
     metadata: Dict[str, Any] = {
         "operation": "task_execution",
         "agent_uuid": agent_uuid,
@@ -338,6 +343,8 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
         metadata["conversation_history"] = conversation_history
     if thread_uuid:
         metadata["thread_uuid"] = thread_uuid
+    if show_reasoning is not None:
+        metadata["show_reasoning"] = bool(show_reasoning)
     return {
         "message": {"role": "ROLE_USER", "parts": [{"text": text}]},
         "metadata": metadata,
@@ -396,6 +403,60 @@ def is_reasoning_artifact(artifact: Any) -> bool:
     )
 
 
+class StreamSections:
+    """Print streamed chunks in tagged reasoning / response sections.
+
+    Same layout as silvaengine_gateway's tests/chat_websocket.py:
+
+        >>> REASONING START
+        ...model reasoning...
+        <<< REASONING END
+        >>> RESPONSE START
+        ...answer...
+        <<< RESPONSE END
+
+    Reasoning is printed dimmed; ``show_reasoning=False`` hides it locally.
+    """
+
+    _LABELS = {"reasoning": ("REASONING", Y), "response": ("RESPONSE", C)}
+
+    def __init__(self, show_reasoning: bool = True, response_color: str = "") -> None:
+        self.show_reasoning = show_reasoning
+        self.response_color = response_color
+        self.mode: Optional[str] = None
+        self.reasoning = ""
+
+    def reasoning_chunk(self, text: str) -> None:
+        self.reasoning += text
+        if not self.show_reasoning:
+            return
+        self._switch("reasoning")
+        print(f"{D}{text}{RST}", end="", flush=True)
+
+    def response_chunk(self, text: str) -> None:
+        self._switch("response")
+        print(f"{self.response_color}{text}{RST}", end="", flush=True)
+
+    def _switch(self, mode: str) -> None:
+        if mode == self.mode:
+            return
+        self.close()
+        label, color = self._LABELS[mode]
+        print(f"\n{color}>>> {label} START{RST}", flush=True)
+        self.mode = mode
+
+    def close(self) -> None:
+        """End the open section (call once per turn, after the stream)."""
+        if self.mode:
+            label, color = self._LABELS[self.mode]
+            print(f"\n{color}<<< {label} END{RST}", flush=True)
+        self.mode = None
+
+    def reset(self) -> None:
+        self.close()
+        self.reasoning = ""
+
+
 def extract_state(body: Dict[str, Any]) -> str:
     """Extract a task state name from a JSON-RPC result (if present)."""
     result = body.get("result")
@@ -419,5 +480,5 @@ __all__ = [
     "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
-    "is_reasoning_artifact",
+    "is_reasoning_artifact", "StreamSections",
 ]

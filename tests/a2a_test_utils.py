@@ -382,6 +382,20 @@ def extract_text(body: Dict[str, Any]) -> str:
     return ""
 
 
+def is_reasoning_artifact(artifact: Any) -> bool:
+    """True for an SSE artifact chunk the gateway tagged as model reasoning.
+
+    The bridge streams reasoning (e.g. goose agent_thought_chunk, Hermes
+    reasoning deltas) tagged in ``artifact.metadata`` (``data_format:
+    reasoning``, or a message_group_id suffix containing "rs"). It is not part
+    of the answer, so listeners must not print or count it as reply text.
+    """
+    meta = artifact.get("metadata") if isinstance(artifact, dict) else None
+    return isinstance(meta, dict) and any(
+        "reason" in str(v).lower() for v in meta.values()
+    )
+
+
 def extract_state(body: Dict[str, Any]) -> str:
     """Extract a task state name from a JSON-RPC result (if present)."""
     result = body.get("result")
@@ -405,4 +419,5 @@ __all__ = [
     "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
+    "is_reasoning_artifact",
 ]

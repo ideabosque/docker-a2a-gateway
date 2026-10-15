@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from a2a_test_utils import (
     B, C, D, G, R, Y, RST,
+    is_reasoning_artifact,
     extract_text, jsonrpc_error, load_env, resolve_config,
     health_ok, message_send_params, send_a2a, unwrap_response,
     goose_acp_ok,
@@ -121,7 +122,10 @@ class SSEListener:
                                     active_turn = self._active_turn
                                     local_text = ""
                                 artifact = event.get("artifact", {})
-                                if isinstance(artifact, dict) and artifact.get("text"):
+                                # Reasoning chunks are tagged in artifact.metadata and
+                                # are not part of the answer; skip them.
+                                if (isinstance(artifact, dict) and artifact.get("text")
+                                        and not is_reasoning_artifact(artifact)):
                                     text = artifact["text"]
                                     if local_text and (
                                         text == local_text

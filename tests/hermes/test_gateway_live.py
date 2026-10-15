@@ -31,6 +31,7 @@ from __future__ import print_function
 import argparse
 import json
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -205,13 +206,23 @@ def test_08_cancel(cfg):
         cfg["agent_uuid"], task_id,
         task_type="hermes_e2e_cancel", stream=True,
     )
-    # Fire the send without waiting for the full reply.
-    send_a2a(
-        cfg["gateway_url"], cfg["token"], cfg["endpoint_id"], cfg["part_id"],
-        "message/send", params, request_id=f"e2e-cancel-send-{task_id}",
-        timeout=30,
-    )
-    time.sleep(3)  # let it start
+    # Fire the send in a background thread so the long-running task is
+    # in-flight when the cancel below is sent (same pattern as the OpenClaw
+    # and goose suites). A blocking send hit the 30 s client timeout before
+    # the essay finished, so the cancel never ran.
+    def _bg():
+        try:
+            send_a2a(
+                cfg["gateway_url"], cfg["token"], cfg["endpoint_id"],
+                cfg["part_id"], "message/send", params,
+                request_id=f"e2e-cancel-send-{task_id}", timeout=120,
+            )
+        except Exception:
+            pass  # the send is expected to end early once cancelled
+
+    t = threading.Thread(target=_bg, daemon=True)
+    t.start()
+    time.sleep(5)  # let it start
     cancel_params = {"id": task_id, "metadata": {"agent_uuid": cfg["agent_uuid"]}}
     r = send_a2a(
         cfg["gateway_url"], cfg["token"], cfg["endpoint_id"], cfg["part_id"],
@@ -224,6 +235,7 @@ def test_08_cancel(cfg):
     ok = (not err) or isinstance(body.get("result"), dict)
     _record("tasks/cancel", ok,
             f"state={extract_state(body)!r}" if not err else f"error={err}")
+    t.join(timeout=15)
 
 
 def test_09_failure(cfg):

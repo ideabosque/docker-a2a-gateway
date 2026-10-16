@@ -328,10 +328,15 @@ services:
     ports:
       - "${GOOSE_PORT:-3284}:3284"
     volumes:
-      # The goose agent's working directory (GOOSE_CWD=/workspace) — the only
-      # host folder it can reach. goose tools run with the container's
-      # privileges; do not add broader host mounts.
+      # The goose agent's default working directory (GOOSE_CWD=/workspace).
+      # goose tools run with the container's privileges; do not add broader
+      # host mounts.
       - ${GOOSE_WORKSPACE_FOLDER:-./www/goose-workspace}:/workspace
+      # Shared projects folder (same PROJECTS_FOLDER as hermes/openclaw): the
+      # repos the agent works on, e.g. supplier_rating_agent_system with its
+      # CLI and .agents/skills (goose loads .agents/skills from its working
+      # directory). Keep only the repos the agent needs here, no supplier data.
+      - ${PROJECTS_FOLDER:-./www/projects}:/workspace/projects
       # goose config + server state (config.yaml, server-secret.txt)
       - ${GOOSE_DATA_FOLDER:-goose-data}:/root/.config/goose
       # goose sessions database + logs
@@ -362,6 +367,9 @@ services:
       # Extra `goose serve` flags, e.g. `--with-builtin memory`
       # (the `developer` builtin is always loaded).
       - EXTRA_GOOSE_SERVE_ARGS=${EXTRA_GOOSE_SERVE_ARGS:-}
+      # Project CLIs installed in a venv on the projects mount (e.g. `sra` in
+      # /workspace/projects/.venvs/goose) come first on PATH.
+      - PATH=${GOOSE_EXTRA_PATH:-/workspace/projects/.venvs/goose/bin}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     restart: unless-stopped
     healthcheck:
       # ACP `initialize` must return agentCapabilities; the script falls back

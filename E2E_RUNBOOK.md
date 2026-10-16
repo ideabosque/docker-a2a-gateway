@@ -23,12 +23,26 @@ Status prepared 2026-10-15 after the S0/S1 build (E-1/E-2/E-3/E-8, A-1/A-3/A-5/A
    compose service name `postgres`, override `PG_HOST=127.0.0.1 PG_PORT=5442`
    in the same command). Then wipe + publish RV-0.7 there:
    `sra rules import --version 0.7` → approve → `sra rules publish`.
-4. **Agent runtime**: clone `supplier_rating_agent_system` +
-   `data_lookup_toolkit` into `www/projects/`, create a venv
-   (`www/projects/.venvs/<runtime>`), `pip install -e` both, link
-   `.agents/skills` per runtime, and give `sra` its own `.env` with
-   `SRE_GATEWAY_URL=http://a2a-gateway:8765` + a dedicated agent account
-   (`G-3`), then `scripts/seed_agents.py`.
+4. **Agent runtime (Goose, done 2026-10-16)**:
+   - `git clone` `supplier_rating_agent_system` and `data_lookup_toolkit` into
+     `www/projects/` (git-ignored here; clones carry no `.env` or `data/`).
+   - The `goose` service mounts `PROJECTS_FOLDER` at `/workspace/projects` and puts
+     `/workspace/projects/.venvs/goose/bin` first on `PATH`; the image has
+     `python3-venv`. In the container:
+     `python3 -m venv /workspace/projects/.venvs/goose` and
+     `pip install -e ./data_lookup_toolkit -e ./supplier_rating_agent_system`.
+   - `GOOSE_CWD=/workspace/projects/supplier_rating_agent_system`: goose 1.53 loads
+     `.agents/skills/` from its working directory (and `~/.agents/skills/` globally),
+     so the repo's skills need no copy or link.
+   - Agent account `sra-agent` (role `agent`) in `data/sra-users.json`
+     (`LOCAL_USER_FILE=/app/data/sra-users.json`); its password lives only in
+     `www/projects/supplier_rating_agent_system/.env` (`SRE_GATEWAY_URL=http://a2a-gateway:8765`).
+     Needs the silvaengine_gateway fixes (users-file tokens carry `user_id`;
+     bcrypt checked directly).
+   - `GOOSE_PERMISSION_MODE=ask`, so every command Goose wants to run waits for an
+     approval; the workbench chat cannot answer approvals yet.
+   - After editing `.env`, recreate the service (`docker compose up -d --no-deps <svc>`);
+     `docker restart` keeps the old environment.
 5. **Workbench**: `.env.local` `GATEWAY_URL=http://localhost:8765`
    (the stack gateway publishes 8765 on the host), `SRA_WORKBENCH_URL=http://localhost:3000`
    for notification deep links. The local admin token is minted with

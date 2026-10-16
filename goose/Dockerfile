@@ -43,6 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         bzip2 \
         git \
         python3 \
+        python3-venv \
+        python3-pip \
         && rm -rf /var/lib/apt/lists/*
 
 # Install the pinned goose CLI release (static binary from the release
@@ -76,12 +78,16 @@ RUN chmod 755 /etc/supervisor/conf.d/goose.conf
 # generation when unset, then exec supervisord (the ONLY place that decides
 # how the container starts — do not add a `command:` override in compose).
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Strip CR: a Windows checkout (core.autocrlf) gives CRLF, and a CRLF
+# shebang fails with 'exec ... no such file or directory'.
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Compose healthcheck: ACP initialize probe that also works with a generated
 # secret and closes the connection it opens.
 COPY healthcheck.sh /usr/local/bin/goose-healthcheck.sh
-RUN chmod +x /usr/local/bin/goose-healthcheck.sh
+# Strip CR: a Windows checkout (core.autocrlf) gives CRLF, and a CRLF
+# shebang fails with 'exec ... no such file or directory'.
+RUN sed -i 's/\r$//' /usr/local/bin/goose-healthcheck.sh && chmod +x /usr/local/bin/goose-healthcheck.sh
 
 EXPOSE 3284
 

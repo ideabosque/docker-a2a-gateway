@@ -13,6 +13,9 @@ package: a2a_protocol_plugin
 transport: hybrid
 config_class: "a2a_protocol_plugin.handlers.config:Config"
 config_init_style: kwargs
+# Scheduler (a2a_scheduler): sends stored schedule prompts to agents on a
+# cron cadence; A2A_SCHEDULER_ENABLED / _INTERVAL / _PARTITIONS in .env.
+on_startup: "a2a_protocol_plugin.handlers.a2a_scheduler:start_scheduler"
 on_shutdown: "silvaengine_daemon.sse:cleanup_sse"
 sse_manager: "silvaengine_daemon.sse:sse_manager"
 routes:

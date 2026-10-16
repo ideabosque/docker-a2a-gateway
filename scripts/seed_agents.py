@@ -64,6 +64,20 @@ AGENTS = [
             "agent_type": os.environ.get("A2A_GOOSE_AGENT_TYPE", "goose"),
         },
     },
+    # Unattended Goose for scheduled runs (a2a_scheduler): nobody is there to
+    # answer permission requests, so it has its own policy instead of the chat
+    # agent's GOOSE_PERMISSION_MODE=ask. What a run may change is still decided
+    # server-side by the engines' role checks on the agent account it uses.
+    {
+        "agentId": os.environ.get("A2A_GOOSE_SCHEDULER_AGENT_UUID", "a2a-goose-scheduler"),
+        "agentName": os.environ.get("A2A_GOOSE_SCHEDULER_AGENT_NAME", "Goose Scheduler"),
+        "metadata": {
+            "agent_type": os.environ.get("A2A_GOOSE_AGENT_TYPE", "goose"),
+            "goose_permission_mode": os.environ.get(
+                "A2A_GOOSE_SCHEDULER_PERMISSION_MODE", "auto_allow"
+            ),
+        },
+    },
 ]
 
 

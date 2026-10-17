@@ -55,8 +55,15 @@ services:
       # entrypoint merges from here at container start — add/edit/remove
       # files under ./addons/ + restart, routes.yaml never needs to change.
       - ${ADDONS_HOST_DIR:-./addons}:/app/addons:ro
+      # Optional read-only source overlay, matching docker-mcp-kg-gateway.
+      # PYTHONPATH selects which repositories under /app/src are imported.
+      - ${SILVAENGINE_SRC:-./www/projects}:/app/src:ro
+      # Optional framework source roots preserve local scheduler/auth fixes.
+      - ${A2A_PROTOCOL_PLUGIN_SRC:-./www/projects/a2a_protocol_plugin}:/app/framework/a2a_protocol_plugin:ro
+      - ${SILVAENGINE_GATEWAY_SRC:-./www/projects/silvaengine_gateway}:/app/framework/silvaengine_gateway:ro
     environment:
       - PYTHONUNBUFFERED=1
+      - PYTHONPATH=${PYTHONPATH:-}
       # PostgreSQL connection defaults for a2a_protocol_plugin. db_backend is
       # forced to "postgresql" in the Dockerfile (no DynamoDB option). These
       # default to the bundled 'postgres' service; .env overrides any of them

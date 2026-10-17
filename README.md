@@ -1407,3 +1407,40 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 ## 📝 License
 
 MIT — see [LICENSE](LICENSE).
+
+## Local engine source overlay
+
+The gateway can import cloned engines without installing their source into the image,
+using the same read-only source overlay as docker-mcp-kg-gateway. Configure `.env`:
+
+```dotenv
+SILVAENGINE_SRC=./www/projects
+PYTHONPATH=/app/src/supplier_rating_engine
+```
+
+Clone the engine into `www/projects/supplier_rating_engine`, or set `SILVAENGINE_SRC`
+to an absolute host directory containing that repository. PYTHONPATH uses Linux
+container paths and colon separators. For a src-layout package, include its `/src`
+directory too. Only listed import roots override installed packages. Package
+dependencies must already be installed in the gateway image, and the engine still
+needs an addon route under `addons/` (see its README).
+
+After changing the mount or environment, recreate the gateway:
+
+```bash
+docker compose up -d --no-deps a2a-gateway
+```
+
+Subsequent source edits need a gateway restart to reload imports, without an image
+rebuild. Data and log mounts are unchanged. Empty PYTHONPATH disables source imports.
+
+### Existing local framework fixes
+
+For local scheduler/auth development, optional read-only framework mounts use
+`A2A_PROTOCOL_PLUGIN_SRC` and `SILVAENGINE_GATEWAY_SRC`. Set their host checkout
+paths in `.env` and add `/app/framework/a2a_protocol_plugin` and
+`/app/framework/silvaengine_gateway` to the colon-separated `PYTHONPATH` alongside
+the supplier engine path. These mounts preserve local source fixes across image
+rebuilds; changes made only inside a running container do not survive recreation.
+The local checkouts must contain the required fixes. Keep these overrides empty
+in deployments that use released framework packages from the image.

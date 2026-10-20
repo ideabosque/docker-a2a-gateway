@@ -52,8 +52,6 @@ if hasattr(_sys.stdout, "reconfigure"):
 import argparse
 import json
 import sys
-import threading
-import time
 import uuid
 from pathlib import Path
 
@@ -64,7 +62,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from a2a_test_utils import (
     B, C, D, G, R, Y, RST,
-    is_reasoning_artifact, StreamSections,
     load_env, resolve_token, resolve_config,
     health_ok, goose_acp_ok,
 )
@@ -75,117 +72,7 @@ __author__ = "bibow"
 # ---------------------------------------------------------------------------
 # SSE listener
 # ---------------------------------------------------------------------------
-class SSEListener:
-    """Background SSE listener that prints streaming chunks in real-time."""
-
-    def __init__(self, gateway_url, token, endpoint_id, part_id):
-        self.gateway_url = gateway_url
-        self.token = token
-        self.endpoint_id = endpoint_id
-        self.part_id = part_id
-        self.stop = False
-        self.thread = None
-        self.current_task_id = None
-        self.full_text = ""
-        self.sections = StreamSections(response_color=Y)
-        self.done = threading.Event()
-        self._turn = 0
-        self._active_turn = -1
-
-    def start(self):
-        def _listen():
-            active_turn = -1
-            local_text = ""
-            try:
-                r = requests.get(
-                    f"{self.gateway_url}/{self.endpoint_id}/a2a_sse",
-                    headers={
-                        "Authorization": f"Bearer {self.token}",
-                        "Part-Id": self.part_id,
-                        "Accept": "text/event-stream",
-                    },
-                    stream=True,
-                    timeout=300,
-                )
-                if r.status_code != 200:
-                    print(f"{R}SSE connection failed: HTTP {r.status_code}{RST}")
-                    return
-
-                for line in r.iter_lines(decode_unicode=True):
-                    if self.stop:
-                        break
-                    if not line:
-                        continue
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                        if data_str == "[DONE]":
-                            continue
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        etype = event.get("type", event.get("event", ""))
-
-                        if etype == "task_artifact":
-                            tid = event.get("task_id", "")
-                            if tid == "streaming-task" or tid == self.current_task_id:
-                                if self._active_turn != active_turn:
-                                    active_turn = self._active_turn
-                                    local_text = ""
-
-                                artifact = event.get("artifact", {})
-                                # Reasoning (tagged in artifact.metadata) prints in its own
-                                # tagged section; the answer is accumulated separately.
-                                if isinstance(artifact, dict) and artifact.get("text"):
-                                    text = artifact["text"]
-                                    if is_reasoning_artifact(artifact):
-                                        self.sections.reasoning_chunk(text)
-                                    elif local_text and (
-                                        text == local_text
-                                        or text.startswith(local_text)
-                                        or local_text.startswith(text)
-                                    ):
-                                        pass  # accumulated / duplicate chunk
-                                    else:
-                                        self.sections.response_chunk(text)
-                                        local_text += text
-                                        self.full_text = local_text
-
-                        if etype in ("task_status", "status"):
-                            state = event.get("state", event.get("status", ""))
-                            if state in ("completed", "COMPLETED"):
-                                self.done.set()
-
-                        if etype == "error" or "error" in str(event).lower()[:20]:
-                            err = event.get("error", event.get("message", ""))
-                            if err:
-                                print(f"\n{R}Error: {err}{RST}", flush=True)
-                                self.done.set()
-
-                    elif line.startswith("event: "):
-                        pass
-
-            except requests.exceptions.ConnectionError:
-                pass
-            except Exception as e:
-                if not self.stop:
-                    print(f"{R}SSE error: {e}{RST}")
-
-        self.thread = threading.Thread(target=_listen, daemon=True)
-        self.thread.start()
-        time.sleep(1)
-
-    def set_task(self, task_id):
-        self.current_task_id = task_id
-        self.full_text = ""
-        self.sections.reset()
-        self.done.clear()
-        self._turn += 1
-        self._active_turn = self._turn
-
-    def stop_listening(self):
-        self.stop = True
+from chatbot_stream import SSEListener, interactive_request
 
 
 # ---------------------------------------------------------------------------
@@ -311,9 +198,12 @@ def main():
         sse = SSEListener(cfg["gateway_url"], cfg["token"],
                           cfg["endpoint_id"], cfg["part_id"])
         sse.start()
+        if not sse.connected:
+            print(f"{R}Cannot chat without SSE: tool permissions would be hidden.{RST}")
+            return
         print(f"{D}SSE stream connected. Type a message and press Enter to chat.{RST}")
     else:
-        print(f"{D}SSE disabled; using HTTP response only.{RST}")
+        print(f"{D}SSE disabled; using HTTP response only. Permission prompts require SSE; ask mode may time out.{RST}")
     print(f"{D}Type 'quit' or 'exit' to leave. Type 'clear' to reset history.{RST}\n")
 
     conversation_history = []
@@ -344,19 +234,24 @@ def main():
 
         print(f"{B}Agent>{RST} ", end="", flush=True)
 
-        r = send_message(
-            cfg["gateway_url"], cfg["token"], cfg["endpoint_id"], cfg["part_id"],
-            user_input, task_id,
-            agent_uuid=cfg["agent_uuid"],
-            system_prompt=args.system,
-            conversation_history=conversation_history if conversation_history else None,
-            thread_uuid=thread_uuid,
-            show_reasoning=False if args.hide_reasoning else None,
-        )
+        try:
+            r = interactive_request(lambda: send_message(
+                cfg["gateway_url"], cfg["token"], cfg["endpoint_id"], cfg["part_id"],
+                user_input, task_id,
+                agent_uuid=cfg["agent_uuid"],
+                system_prompt=args.system,
+                conversation_history=conversation_history if conversation_history else None,
+                thread_uuid=thread_uuid,
+                show_reasoning=False if args.hide_reasoning else None,
+            ), sse)
+        except requests.RequestException as exc:
+            print(f"\n{R}Request failed: {exc}{RST}")
+            if sse:
+                sse.sections.close()
+            continue
 
         streamed_text = ""
         if sse:
-            sse.done.wait(timeout=30)
             sse.sections.close()
             streamed_text = sse.full_text
 

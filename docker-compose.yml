@@ -353,7 +353,6 @@ services:
       # the first start generates one, prints it and saves it in the
       # goose-data volume (server-secret.txt). Set GOOSE_SECRET_KEY (gateway
       # side) to the SAME value in .env.
-      - GOOSE_SERVER__SECRET_KEY=${GOOSE_SERVER__SECRET_KEY:-}
       # First-start provider setup (openai_compat | anthropic | openrouter |
       # ollama | gemini); openai_compat uses the shared OPENAI_COMPAT_* vars.
       - GOOSE_MODEL_PROVIDER=${GOOSE_MODEL_PROVIDER:-}

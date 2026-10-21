@@ -16,6 +16,8 @@ data/*
 www/*
 postgres_data/*
 postgres_logs/*
+backups/*
+!backups/.gitkeep
 !www/.gitkeep
 !www/logs/.gitkeep
 !www/projects/.gitkeep

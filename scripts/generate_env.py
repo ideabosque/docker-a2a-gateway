@@ -229,6 +229,7 @@ def main():
 
     # Process template lines
     output_lines: list[str] = []
+    template_vars: set[str] = set()
     for line in template.splitlines():
         # Skip the "TEMPLATE" header line
         if "TEMPLATE" in line and "Copy to .env" in line:
@@ -250,12 +251,23 @@ def main():
             if commented:
                 var_name = commented.group(1)
                 if var_name in generated:
+                    template_vars.add(var_name)
                     output_lines.append(f"{var_name}={generated[var_name]}")
-                    continue
+                elif current(var_name):
+                    # User already carries an active, non-empty value for this
+                    # opt-in var (e.g. a type default changed per deployment).
+                    # Emit nothing here and leave it out of template_vars so
+                    # the live value is preserved exactly once in the "Local
+                    # additions" section — no duplicate VAR lines anywhere.
+                    pass
+                else:
+                    output_lines.append(line)
+                continue
             output_lines.append(line)
             continue
 
         var_name = match.group(1)
+        template_vars.add(var_name)
 
         if var_name in cli_overrides:
             output_lines.append(f"{var_name}={cli_overrides[var_name]}")
@@ -274,6 +286,19 @@ def main():
         else:
             output_lines.append(line)
 
+    # Preserve vars that exist in .env but are not (active) template vars --
+    # hand-added deployment settings (e.g. addon/module vars). Without this, a
+    # --force merge would silently drop them, since the merge loop only walks
+    # .env.example lines.
+    legacy = [v for v in existing if v not in template_vars]
+    if legacy:
+        output_lines.append("")
+        output_lines.append("# " + "=" * 76)
+        output_lines.append("# Local additions: kept from the previous .env; not defined in .env.example.")
+        output_lines.append("# Merge these into .env.example if they belong in the shared template.")
+        output_lines.append("# " + "=" * 76)
+        for var_name in legacy:
+            output_lines.append(f"{var_name}={existing[var_name]}")
     env_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
 
     action = "Updated" if existing else "Generated"

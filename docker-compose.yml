@@ -55,12 +55,10 @@ services:
       # entrypoint merges from here at container start — add/edit/remove
       # files under ./addons/ + restart, routes.yaml never needs to change.
       - ${ADDONS_HOST_DIR:-./addons}:/app/addons:ro
-      # Optional read-only source overlay, matching docker-mcp-kg-gateway.
-      # PYTHONPATH selects which repositories under /app/src are imported.
-      - ${SILVAENGINE_SRC:-./www/projects}:/app/src:ro
-      # Optional framework source roots preserve local scheduler/auth fixes.
-      - ${A2A_PROTOCOL_PLUGIN_SRC:-./www/projects/a2a_protocol_plugin}:/app/framework/a2a_protocol_plugin:ro
-      - ${SILVAENGINE_GATEWAY_SRC:-./www/projects/silvaengine_gateway}:/app/framework/silvaengine_gateway:ro
+      # Read-only framework and addon source roots. PYTHONPATH selects the
+      # repositories to import instead of the image's installed packages.
+      - ${SILVAENGINE_SRC:-../silvaengine}:/app/src:ro
+      - ${EXTRA_MODULES_DIR:-./www/projects}:/app/extra_modules:ro
     environment:
       - PYTHONUNBUFFERED=1
       - PYTHONPATH=${PYTHONPATH:-}

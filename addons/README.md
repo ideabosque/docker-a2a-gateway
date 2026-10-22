@@ -58,6 +58,14 @@ package still needs to be **importable** inside the container: add it to
 `../requirements-modules.txt` as a `--no-deps` git install, its real deps to
 `../requirements.txt`, then `docker compose build`.
 
+For local development, set `EXTRA_MODULES_DIR` to the host directory containing
+addon repositories and add each import root to `PYTHONPATH`, for example
+`/app/extra_modules/my_engine`. Framework repositories live under `SILVAENGINE_SRC`
+and are available at `/app/src`. Source mounts are read-only; dependencies must
+already be installed in the image. Recreate the gateway after changing these
+settings. Route manifests in this folder are configured separately by
+`ADDONS_HOST_DIR`.
+
 ## Example
 
 ```yaml

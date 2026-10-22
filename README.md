@@ -1414,12 +1414,18 @@ The gateway can import cloned engines without installing their source into the i
 using the same read-only source overlay as docker-mcp-kg-gateway. Configure `.env`:
 
 ```dotenv
-SILVAENGINE_SRC=./www/projects
-PYTHONPATH=/app/src/supplier_rating_engine
+SILVAENGINE_SRC=../silvaengine
+EXTRA_MODULES_DIR=./www/projects
+PYTHONPATH=/app/extra_modules/supplier_rating_engine
 ```
 
-Clone the engine into `www/projects/supplier_rating_engine`, or set `SILVAENGINE_SRC`
-to an absolute host directory containing that repository. PYTHONPATH uses Linux
+`SILVAENGINE_SRC` is the host directory containing framework repositories and mounts
+read-only at `/app/src`. `EXTRA_MODULES_DIR` contains addon repositories and mounts
+read-only at `/app/extra_modules`. Both accept absolute paths or paths relative to
+the Compose file. Route manifests still live in `addons/` (`ADDONS_HOST_DIR`).
+
+Clone the engine into `www/projects/supplier_rating_engine`, or set `EXTRA_MODULES_DIR`
+to a host directory containing that repository. PYTHONPATH uses Linux
 container paths and colon separators. For a src-layout package, include its `/src`
 directory too. Only listed import roots override installed packages. Package
 dependencies must already be installed in the gateway image, and the engine still
@@ -1436,11 +1442,14 @@ rebuild. Data and log mounts are unchanged. Empty PYTHONPATH disables source imp
 
 ### Existing local framework fixes
 
-For local scheduler/auth development, optional read-only framework mounts use
-`A2A_PROTOCOL_PLUGIN_SRC` and `SILVAENGINE_GATEWAY_SRC`. Set their host checkout
-paths in `.env` and add `/app/framework/a2a_protocol_plugin` and
-`/app/framework/silvaengine_gateway` to the colon-separated `PYTHONPATH` alongside
-the supplier engine path. These mounts preserve local source fixes across image
-rebuilds; changes made only inside a running container do not survive recreation.
-The local checkouts must contain the required fixes. Keep these overrides empty
-in deployments that use released framework packages from the image.
+For local scheduler/auth development, place the framework checkouts under
+`SILVAENGINE_SRC` and select them in the colon-separated `PYTHONPATH`:
+
+```dotenv
+PYTHONPATH=/app/extra_modules/supplier_rating_engine:/app/src/a2a_protocol_plugin:/app/src/silvaengine_gateway
+```
+
+These mounts preserve local source fixes across image rebuilds; changes made only
+inside a running container do not survive recreation. The local checkouts must
+contain the required fixes. Omit the framework paths from `PYTHONPATH` to use the
+framework packages installed in the image.

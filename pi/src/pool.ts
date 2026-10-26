@@ -1,15 +1,15 @@
 /**
- * pool.ts — pi session pool (one process per active session).
+ * pool.ts â€” pi session pool (one process per active session).
  *
  * Sessions are keyed by pi's own sessionId (from get_state). The session FILE
  * survives process exit, so the pool may close idle processes at any time and
  * transparently re-open the stored file (switch_session) when the session is
- * prompted again — the A2A conversation keeps working across sidecar
+ * prompted again â€” the A2A conversation keeps working across sidecar
  * restarts through the persisted index (sessions-index.json).
  *
- * Guards, per docs/PI_INTEGRATION_PLAN.md §1:
+ * Guards, per docs/PI_INTEGRATION_PLAN.md Â§1:
  * - one run per session: the second prompt while streaming is a 409 unless
- *   it carries `streamingBehavior` (pass-through — the HTTP layer decides);
+ *   it carries `streamingBehavior` (pass-through â€” the HTTP layer decides);
  * - PI_MAX_PROCESSES caps live processes (503 when full);
  * - idle reaping closes processes with no use for PI_IDLE_TIMEOUT (the
  *   session file stays on the volume).
@@ -22,9 +22,9 @@ import { type JsonRecord, PiRpc, type RpcResponse } from "./rpc.js";
 
 export interface CreateOptions {
 	cwd?: string;
-	/** "provider/modelId" — split on the first "/" into --provider/--model. */
+	/** "provider/modelId" â€” split on the first "/" into --provider/--model. */
 	model?: string;
-	/** pi thinking level: off … max. */
+	/** pi thinking level: off â€¦ max. */
 	thinking?: string;
 }
 
@@ -66,6 +66,8 @@ export interface PoolSession {
 
 export class SessionPool {
 	private readonly sessions = new Map<string, PoolSession>();
+	private creating = 0;
+	private readonly resuming = new Map<string, Promise<PoolSession>>();
 	private readonly indexer: Promise<
 		Record<string, { sessionFile: string; cwd: string; model?: string; thinking?: string }>
 	>;
@@ -102,52 +104,63 @@ export class SessionPool {
 
 	/** Create a fresh session (new process, new pi session). */
 	async create(opts: CreateOptions = {}, resumeFile?: string): Promise<PoolSession> {
-		if (this.sessions.size >= this.init.maxProcesses) {
+		// Reserve capacity before the first await so concurrent requests cannot
+		// all pass the cap while their subprocesses are still starting.
+		if (this.sessions.size + this.creating >= this.init.maxProcesses) {
 			throw new PoolError(
 				`pi sidecar at the process cap (${this.init.maxProcesses}); ` +
 					"close sessions or raise PI_MAX_PROCESSES",
 				503,
 			);
 		}
-		const cwd = opts.cwd || this.init.defaultCwd;
-		const args = [...this.init.baseArgs];
-		const model = opts.model || undefined;
-		if (model) {
-			const slash = model.indexOf("/");
-			if (slash > 0) {
-				args.push("--provider", model.slice(0, slash), "--model", model.slice(slash + 1));
-			} else {
-				args.push("--model", model);
+		this.creating++;
+		let rpc: PiRpc | undefined;
+		try {
+			const cwd = opts.cwd || this.init.defaultCwd;
+			const args = [...this.init.baseArgs];
+			const model = opts.model || undefined;
+			if (model) {
+				const slash = model.indexOf("/");
+				if (slash > 0) {
+					args.push("--provider", model.slice(0, slash), "--model", model.slice(slash + 1));
+				} else {
+					args.push("--model", model);
+				}
 			}
-		}
-		if (opts.thinking) args.push("--thinking", opts.thinking);
-		args.push("--session-dir", this.init.sessionDir);
+			if (opts.thinking) args.push("--thinking", opts.thinking);
+			args.push("--session-dir", this.init.sessionDir);
 
-		// Wait for pi to be ready (the RPC runtime answers commands when up).
-		const rpc = await this.spawn(cwd, args, opts);
-		if (resumeFile) {
-			const resp = await rpc.request({ type: "switch_session", sessionPath: resumeFile });
-			const data = (resp.data ?? {}) as Record<string, unknown>;
-			if (data["cancelled"] === true) {
-				throw new PoolError("an extension cancelled the session switch", 409);
+			// Wait for pi to be ready (the RPC runtime answers commands when up).
+			rpc = await this.spawn(cwd, args);
+			if (resumeFile) {
+				const resp = await rpc.request({ type: "switch_session", sessionPath: resumeFile });
+				const data = (resp.data ?? {}) as Record<string, unknown>;
+				if (data["cancelled"] === true) {
+					throw new PoolError("an extension cancelled the session switch", 409);
+				}
 			}
+			const state = await rpc.getState();
+			const id = String(state["sessionId"] ?? `session-${Date.now()}`);
+			const session: PoolSession = {
+				id,
+				sessionFile: state["sessionFile"] ? String(state["sessionFile"]) : null,
+				cwd,
+				rpc,
+				streaming: Boolean(state["isStreaming"]),
+				lastUsed: Date.now(),
+				...(opts.model ? { model: opts.model } : {}),
+				...(opts.thinking ? { thinking: opts.thinking } : {}),
+			};
+			this.sessions.set(id, session);
+			this.log("info", `session ${id} live (${resumeFile ? "resumed" : "new"}) file=${session.sessionFile}`);
+			await this.persist(id, session);
+			return session;
+		} catch (err) {
+			await rpc?.stop();
+			throw err;
+		} finally {
+			this.creating--;
 		}
-		const state = await rpc.getState();
-		const id = String(state["sessionId"] ?? `session-${Date.now()}`);
-		const session: PoolSession = {
-			id,
-			sessionFile: state["sessionFile"] ? String(state["sessionFile"]) : null,
-			cwd,
-			rpc,
-			streaming: Boolean(state["isStreaming"]),
-			lastUsed: Date.now(),
-			...(opts.model ? { model: opts.model } : {}),
-			...(opts.thinking ? { thinking: opts.thinking } : {}),
-		};
-		this.sessions.set(id, session);
-		this.log("info", `session ${id} live (${resumeFile ? "resumed" : "new"}) file=${session.sessionFile}`);
-		await this.persist(id, session);
-		return session;
 	}
 
 	/** Return a live session, or re-open it from the persisted index. */
@@ -162,11 +175,19 @@ export class SessionPool {
 		if (!meta?.sessionFile) return undefined;
 		// Resume: new process + switch_session onto the stored file, booted
 		// with the model (and thinking level) the session was created with.
-		return this.create(
+		const existing = this.resuming.get(id);
+		if (existing) return existing;
+		const pending = this.create(
 			{ cwd: meta.cwd, ...(meta.model ? { model: meta.model } : {}),
 			  ...(meta.thinking ? { thinking: meta.thinking } : {}) },
 			meta.sessionFile,
 		);
+		this.resuming.set(id, pending);
+		try {
+			return await pending;
+		} finally {
+			this.resuming.delete(id);
+		}
 	}
 
 	setState(id: string, patch: Partial<Pick<PoolSession, "streaming">>): void {
@@ -220,7 +241,7 @@ export class SessionPool {
 				sessionFile: session.sessionFile,
 				cwd: session.cwd,
 			};
-			// Resumed sessions boot with the model they were created with —
+			// Resumed sessions boot with the model they were created with â€”
 			// pi rejects unknown providers (P1 spike: a host PI_PROVIDER leak
 			// otherwise wins the boot for model-less resume).
 			if (session.model) index[id].model = session.model;
@@ -269,7 +290,6 @@ export class SessionPool {
 	private async spawn(
 		cwd: string,
 		args: string[],
-		opts: CreateOptions,
 	): Promise<PiRpc> {
 		// Session id is only known after get_state; events before that carry a
 		// placeholder that is mapped to the real id by the caller (the server
@@ -282,15 +302,26 @@ export class SessionPool {
 			onEvent: (event) => this.init.onEvent?.(id, event),
 			onStderr: (line) => this.init.onStderr?.(id, line),
 			onExit: (code, signal) => {
-				this.sessions.delete(id);
+				// switch_session changes the id after boot. Remove only entries
+				// belonging to this process, never a replacement for the same id.
+				for (const [sessionId, session] of this.sessions) {
+					if (session.rpc === rpc) {
+						id = sessionId;
+						this.sessions.delete(sessionId);
+					}
+				}
 				this.init.onExit?.(id, code, signal);
 			},
 		});
-		void opts;
-		await rpc.start();
-		const state = await rpc.getState();
-		id = String(state["sessionId"] ?? id);
-		return rpc;
+		try {
+			await rpc.start();
+			const state = await rpc.getState();
+			id = String(state["sessionId"] ?? id);
+			return rpc;
+		} catch (err) {
+			await rpc.stop();
+			throw err;
+		}
 	}
 
 	private log(level: "info" | "warn" | "error", message: string): void {
@@ -319,7 +350,9 @@ export function spawnEnvClean(): Record<string, string | undefined> {
 		"PI_APPROVE",
 	]);
 	const env: Record<string, string | undefined> = { ...process.env };
-	for (const key of blocked) delete env[key];
+	// Explicit undefined overrides PiRpc's process.env merge; deleting keys
+	// here would let the original host values back into the child.
+	for (const key of blocked) env[key] = undefined;
 	return env;
 }
 

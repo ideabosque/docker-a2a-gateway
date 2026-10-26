@@ -5,7 +5,7 @@ A container image and `docker compose` stack that runs the
 **only** the [**a2a_protocol_plugin**](https://github.com/ideabosque/a2a_protocol_plugin)
 module registered — exposing the native **Agent-to-Agent (A2A)** protocol surface
 (JSON-RPC 2.0, GraphQL, SSE, Agent Card) and bridging A2A tasks to **any
-combination** of three optional agent backends:
+combination** of four optional agent backends:
 
 - **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research) — an
   OpenAI-compatible API server (HTTP + SSE), bundled via the `hermes` compose
@@ -25,10 +25,10 @@ combination** of three optional agent backends:
 State persists to a bundled **PostgreSQL** backend (DynamoDB is not supported by
 this image). This repository **consolidates** what were previously separate
 images (`docker-a2a-hermes-agent-gateway`, `docker-a2a-openclaw-gateway`) and
-adds goose. The gateway image is the same whichever backends you use; Hermes,
-OpenClaw and goose are independent, profile-gated sibling services — enable
-any of them, or none, and point `HERMES_API_URL` / `OPENCLAW_API_URL` /
-`GOOSE_API_URL` at external instances instead. Modeled on
+adds goose and pi. The gateway image is the same whichever backends you use;
+Hermes, OpenClaw, goose, and pi are independent, profile-gated sibling services.
+Enable any combination, and point `HERMES_API_URL` / `OPENCLAW_API_URL` /
+`GOOSE_API_URL` / `PI_API_URL` at external instances instead. Modeled on
 [`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s pattern of one
 always-on gateway plus interchangeable optional siblings.
 
@@ -170,7 +170,7 @@ and `tests/goose/test_sse_live.py` verifies).
 ```text
 .
 ├── Dockerfile                  # Python 3.12-slim + uv + supervisor build (SSH deploy key)
-├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / goose / postgres siblings
+├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / goose / pi / postgres siblings
 ├── requirements.txt            # third-party deps + shared SilvaEngine libs (git over SSH)
 ├── requirements-modules.txt    # silvaengine_gateway + a2a_protocol_plugin + silvaengine_daemon (--no-deps, git over SSH)
 ├── routes.yaml                 # route manifest — just a loader, see addons/
@@ -180,7 +180,7 @@ and `tests/goose/test_sse_live.py` verifies).
 │   └── example.module.yaml.disabled # copy-paste template for a new addon
 ├── scripts/
 │   ├── merge_addon_routes.py    # merges addons/*.yaml into data/_addons_generated.yaml
-│   ├── seed_agents.py           # upserts the Hermes / OpenClaw / goose agent records
+│   ├── seed_agents.py           # upserts all four backend agent records
 │   └── generate_env.py          # creates .env from .env.example with random per-deployment secrets
 ├── docker-entrypoint.sh        # runs the addon merge, then execs supervisord
 ├── supervisord.conf            # single gateway process under supervisor
@@ -198,7 +198,8 @@ and `tests/goose/test_sse_live.py` verifies).
 │   │   ├── test_sse_live.py       # E2E suite: 6 checks (SSE streaming pipeline)
 │   │   └── test_chatbot.py        # interactive REPL with live SSE streaming
 │   ├── openclaw/                # OpenClaw-bridge scripts (same five-script shape)
-│   └── goose/                   # goose-bridge scripts (same five-script shape)
+│   ├── goose/                   # goose-bridge scripts (same five-script shape)
+│   └── pi/                      # pi smoke, gateway, SSE, approval, and protocol scripts
 ├── openclaw/                   # OpenClaw sibling build context
 │   ├── Dockerfile               # almalinux + Node.js + Python + openclaw CLI
 │   ├── docker-entrypoint.sh     # copies the mounted deploy key into ~/.ssh, fixes perms, execs CMD
@@ -209,14 +210,14 @@ and `tests/goose/test_sse_live.py` verifies).
 │   ├── docker-entrypoint.sh     # server secret + first-start provider config, writes goose-serve.sh
 │   ├── healthcheck.sh           # compose healthcheck (ACP initialize probe)
 │   └── goose.ini                # supervisor program def for `goose serve`
-│   pi/                          # pi sibling: Node sidecar (HTTP + SSE) driving
+├── pi/                          # pi sibling: Node sidecar (HTTP + SSE) driving
 │                                #   `pi --mode rpc` (pi has no network server)
-│       ├── src/                 #   rpc driver, session pool, HTTP server
-│       ├── extensions/          #   tool-approval.js — dialogs for gated tools
-│       ├── test/                #   framing + pool + extension tests (fake pi)
-│       ├── Dockerfile           #   node:24 + pinned pi CLI (npm)
-│       ├── docker-entrypoint.sh #   first-start compat-endpoint config
-│       └── healthcheck.sh       #   GET /health with the shared secret
+│   ├── src/                 #   rpc driver, session pool, HTTP server
+│   ├── extensions/          #   tool-approval.js — dialogs for gated tools
+│   ├── test/                #   framing + pool + extension tests (fake pi)
+│   ├── Dockerfile           #   node:24 + pinned pi CLI (npm)
+│   ├── docker-entrypoint.sh #   first-start compat-endpoint config
+│   └── healthcheck.sh       #   GET /health with the shared secret
 ├── data/                       # persisted gateway state ➜ /app/data (also holds the generated addon manifest)
 ├── logs/                       # supervisor & gateway logs ➜ /var/log/supervisor
 ├── postgres_data/               # bundled PostgreSQL data dir (profile: postgres)
@@ -236,8 +237,7 @@ state and secrets.
 
 ## 🚀 Quick start
 
-For a fully bundled stack (gateway + PostgreSQL + Hermes — the `.env.example`
-default):
+For the default bundled stack (gateway + PostgreSQL + all four agent backends):
 
 ```bash
 cp .env.example .env
@@ -250,7 +250,7 @@ mkdir -p www/hermes www/projects
 
 # Set up ./.ssh first — see "Private repos over SSH" below.
 docker compose build
-docker compose up -d           # COMPOSE_PROFILES=postgres,hermes is the .env default
+docker compose up -d           # COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi is the template default
 
 docker compose ps              # wait for (healthy)
 curl -f http://localhost:8765/health
@@ -298,24 +298,26 @@ to a public registry).
 
 ## 🚢 Using docker compose
 
-The stack has **one always-on service** and **three optional profile-gated
+The stack has **one always-on service** and **five optional profile-gated
 siblings**:
 
 | Service | Container name (default) | Always on? | Profile | Purpose |
 |---|---|---|---|---|
-| `a2a-gateway` | `a2a-gateway` | ✅ yes | — | SilvaEngine Gateway (A2A-only routes) + Hermes/OpenClaw bridge |
+| `a2a-gateway` | `a2a-gateway` | ✅ yes | — | SilvaEngine Gateway (A2A-only routes) + agent bridges |
 | `postgres` | `a2a-postgres` | optional | `postgres` | Bundled PostgreSQL persistence backend |
 | `hermes` | `container-hermes` | optional | `hermes` | Bundled Nous Research Hermes Agent (OpenAI-compatible API + dashboard) |
 | `openclaw` | `container-openclaw` | optional | `openclaw` | Bundled OpenClaw Gateway (OpenAI-compatible API) |
+| `goose` | `container-goose` | optional | `goose` | Bundled goose ACP server |
+| `pi` | `container-pi` | optional | `pi` | Bundled HTTP/SSE sidecar driving pi RPC processes |
 
 PostgreSQL is the **sole** persistence backend (`db_backend=postgresql` is
 forced in the image — no DynamoDB). The bundled `postgres` service is optional
 only in the sense that you may instead point `PG_*` at an external Postgres.
 
-`hermes` and `openclaw` are independent — bundle either, both, or neither; an
+`hermes`, `openclaw`, `goose`, and `pi` are independent — enable any combination; an
 unbundled bridge just needs its `*_API_URL` pointed at an external instance.
 
-The gateway `depends_on` all three siblings with `required: false`, so it
+The gateway `depends_on` all five siblings with `required: false`, so it
 waits for whichever profiles are active and starts anyway when they are off.
 
 ### ⚠️ Editing `.env` (read this first)
@@ -374,7 +376,7 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 `OPENAI_COMPAT_MODEL` once in `.env`, then use `HERMES_MODEL_PROVIDER=openai`
 (Hermes) and `OPENCLAW_MODEL_PROVIDER=openai_compat` (OpenClaw). See `.env.example` for details.
 
-`COMPOSE_PROFILES` is the single switch for all four siblings
+`COMPOSE_PROFILES` is the single switch for all five siblings
 (comma-separated):
 
 | Value | Services started |
@@ -715,7 +717,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | `A2A_SHOW_REASONING` | `true` | Stream model reasoning as tagged SSE chunks (`artifact.metadata.data_format = "reasoning"`), separate from the answer. Override per agent (agent metadata `show_reasoning`) or per request (`params.metadata.show_reasoning`); see [Reasoning](#reasoning) |
 
 Config resolution priority (per-agent): **agent metadata (DB, seeded on
-startup) > setting dict > Config class (env vars above)**. All three agent
+startup) > setting dict > Config class (env vars above)**. All four agent
 records are auto-seeded — see
 [Running several bridges side by side](#-running-several-bridges-side-by-side).
 
@@ -849,7 +851,7 @@ live in `handlers/pi_client.py`; design notes live in the plugin's
 | `PI_PORT` | `3300` | Published host port for the sidecar |
 | `PI_CONTAINER_NAME` | `container-pi` | Container name |
 | `PI_SIDECAR_SECRET_KEY` | generated on first start | Sidecar shared secret — **required**. Set `PI_SECRET_KEY` to the same value. If empty, first start generates one, prints it, and saves it to `/data/server-secret.txt` in the `pi-data` volume |
-| `PI_COMPAT_BASE_URL` / `PI_COMPAT_API_KEY` / `PI_COMPAT_MODEL` | — / — / `local-model` | First-start compatible-endpoint config (pi docs `models.md`): writes `/root/.pi/agent/models.json` targeting `PI_COMPAT_BASE_URL` (defaults to the shared `OPENAI_COMPAT_BASE_URL`) with `$PI_COMPAT_API_KEY` environment interpolation — use `PI_MODEL=compat/<PI_COMPAT_MODEL>` |
+| `PI_COMPAT_BASE_URL` / `PI_COMPAT_API_KEY` / `PI_COMPAT_MODEL` | — / — / `local-model` | First-start compatible-endpoint config (pi docs `models.md`): writes `/root/.pi/agent/models.json` targeting `PI_COMPAT_BASE_URL` (defaults to the shared `OPENAI_COMPAT_BASE_URL`) with `$PI_COMPAT_API_KEY` environment interpolation — use `PI_SIDE_MODEL=compat/<PI_COMPAT_MODEL>` |
 | `PI_SIDE_PROVIDER` / `PI_SIDE_MODEL_ID` | — | Explicit provider/model override (falls back to `PI_SIDE_MODEL`'s `provider/` prefix) |
 | `PI_SIDE_TOOLS` | — | Comma list for `pi --tools` (default: pi's own selection — `read`, `bash`, `edit`, `write`) |
 | `PI_SIDE_EXTRA_ARGS` | — | Extra pi CLI flags per session, e.g. `--no-extensions --offline` |

@@ -16,6 +16,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { PiRpc, RpcClosedError } from "../src/rpc.js";
+import { spawnEnvClean } from "../src/pool.js";
 
 const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 
@@ -93,6 +94,22 @@ describe("PiRpc framing", () => {
 });
 
 describe("PiRpc command semantics", () => {
+	it("does not restore host pi variables after environment filtering", async () => {
+		const previous = process.env.PI_PROVIDER;
+		process.env.PI_PROVIDER = "host-provider-must-not-leak";
+		const rpc = new PiRpc({
+			command: [process.execPath, "-e", `process.stdin.on("data", () => process.stdout.write(JSON.stringify({type:"response",id:"req-1",success:true,data:{provider:process.env.PI_PROVIDER ?? null}})+String.fromCharCode(10)))`],
+			env: spawnEnvClean(),
+		});
+		try {
+			await rpc.start();
+			expect((await rpc.getState())["provider"]).toBeNull();
+		} finally {
+			await rpc.stop();
+			if (previous === undefined) delete process.env.PI_PROVIDER;
+			else process.env.PI_PROVIDER = previous;
+		}
+	});
 	it("rejects failed commands with the protocol error", async () => {
 		const rpc = await makeRpc({ env: { FAKE_PI_FAIL_ABORT: "1" } });
 		await rpc.getState();

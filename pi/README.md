@@ -46,12 +46,16 @@ format is identical; the driver:
 - **One pi process per active session** — `PI_MAX_PROCESSES` caps the pool
   (full pool answers 503); idle processes are closed after
   `PI_IDLE_TIMEOUT_S` (stdin close = orderly pi shutdown).
-- **Session files survive everything.** `--session-dir /data/sessions` keeps
+- **Session files survive process and container restarts while the volume is retained.** `--session-dir /data/sessions` keeps
   pi's JSONL session trees on the `pi-data` volume; `sessions-index.json`
   maps session id → file so `GET /sessions/{id}` transparently re-opens a
   session after a sidecar restart (`switch_session`).
 - **Client disconnects keep runs going** — cancellation is explicit
   (`POST …/abort`); the gateway's `tasks/cancel` maps to it.
+- The A2A handler closes the process after its own turn finishes. A queued
+  `steer`/`followUp` request closes only its HTTP client; the original caller
+  retains the session until that run finishes. Concurrent resumes share one
+  startup, and the process cap includes sessions still starting.
 
 ## Tool approval (bundled extension)
 
@@ -76,3 +80,20 @@ correlation, failed-command errors, process-exit rejection, UI-dialog
 forwarding, session index resume, process cap, and idle reaping. Re-capture
 behaviour against a real pi in the docker stack when the pinned
 `@earendil-works/pi-coding-agent` version changes.
+
+Run the full live validation from the repository root after starting the local
+gateway, PostgreSQL, and pi services and configuring `.env`:
+
+```bash
+python scripts/run_pi_tests.py --suite spike
+python scripts/run_pi_tests.py --suite live
+python scripts/run_pi_tests.py --suite plugin-live --plugin-root ../silvaengine/a2a_protocol_plugin
+python scripts/run_pi_tests.py --suite chatbot
+```
+
+The live suite covers smoke requests, gateway protocol operations, cancellation,
+SSE and HTTP replies, reasoning visibility, and approval/denial. The protocol
+spike answers its own tool dialogs; the approval suite tests user decisions
+through the gateway. Plugin live tests use the local PostgreSQL service for
+conversation mappings. Logs and command results are saved under
+`docs/test_results/pi_review/`; credentials are read at runtime.

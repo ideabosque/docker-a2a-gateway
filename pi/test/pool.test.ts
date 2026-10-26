@@ -54,6 +54,57 @@ function newDir(label: string): string {
 }
 
 describe("SessionPool", () => {
+	it("reserves the process cap across concurrent creates", async () => {
+		const pool = makePool(newDir("concurrent-cap"), { maxProcesses: 1 });
+		try {
+			const results = await Promise.allSettled([pool.create(), pool.create(), pool.create()]);
+			expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+			expect(results.filter((r) => r.status === "rejected")).toHaveLength(2);
+			expect(pool.activeCount).toBe(1);
+		} finally {
+			await pool.closeAll();
+		}
+	});
+
+	it("removes a resumed session when its child crashes and can resume it again", async () => {
+		const pool = makePool(newDir("resume-crash"), { maxProcesses: 1 });
+		try {
+			const original = await pool.create();
+			await pool.close(original.id);
+			const resumed = (await pool.getOrResume(original.id))!;
+			await resumed.rpc.request({ type: "test_crash" }).catch(() => {});
+			await new Promise((r) => setTimeout(r, 50));
+			expect(pool.get(original.id)).toBeUndefined();
+			expect(pool.activeCount).toBe(0);
+			expect((await pool.getOrResume(original.id))!.rpc.alive).toBe(true);
+		} finally {
+			await pool.closeAll();
+		}
+	});
+
+	it("coalesces concurrent resumes into one process", async () => {
+		const pool = makePool(newDir("concurrent-resume"), { maxProcesses: 1 });
+		try {
+			const original = await pool.create();
+			await pool.close(original.id);
+			const [a, b] = await Promise.all([pool.getOrResume(original.id), pool.getOrResume(original.id)]);
+			expect(a).toBe(b);
+			expect(pool.activeCount).toBe(1);
+		} finally {
+			await pool.closeAll();
+		}
+	});
+
+	it("releases its startup reservation after a failed spawn", async () => {
+		const dir = newDir("failed-create");
+		const pool = makePool(dir, { maxProcesses: 1 });
+		try {
+			await expect(pool.create({ cwd: path.join(dir, "missing") })).rejects.toThrow();
+			expect((await pool.create()).rpc.alive).toBe(true);
+		} finally {
+			await pool.closeAll();
+		}
+	});
 	it("creates sessions keyed by pi's sessionId", async () => {
 		const dataDir = newDir("create");
 		const pool = makePool(dataDir);

@@ -143,7 +143,12 @@ export function createServer(opts: ServerOptions): http.Server {
 		};
 
 		let lastUsage: unknown = undefined;
+		// Capture settlement before sending the command: pi may emit the
+		// response and all run events in one stdout read, before request()
+		// resumes and waitForSettle installs its waiter.
+		const settledEvents: JsonRecord[] = [];
 		const usageUnsubscribe = rpc.addEventListener((event) => {
+			if (event["type"] === "agent_settled") settledEvents.push(event);
 			if (event["type"] === "message_update" && event["usage"] !== undefined) {
 				lastUsage = event["usage"];
 			}
@@ -160,6 +165,11 @@ export function createServer(opts: ServerOptions): http.Server {
 				}
 				// Wait for agent_settled, racing the run deadline.
 				const settled = await new Promise<{ aborted: boolean; timedOut: boolean }>((resolve) => {
+					const queued = settledEvents.shift();
+					if (queued) {
+						resolve({ aborted: queued["aborted"] === true, timedOut: false });
+						return;
+					}
 					let done = false;
 					const finish = (
 						result: { aborted: boolean; timedOut: boolean },
@@ -171,6 +181,7 @@ export function createServer(opts: ServerOptions): http.Server {
 					};
 					const unsubscribeSettled = rpc.addEventListener((event) => {
 						if (event["type"] === "agent_settled") {
+							settledEvents.shift();
 							finish({ aborted: event["aborted"] === true, timedOut: false });
 						}
 					});

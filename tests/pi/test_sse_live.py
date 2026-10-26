@@ -35,7 +35,6 @@ if hasattr(_sys.stdout, "reconfigure"):
 
 import argparse
 import json
-import os
 import sys
 import threading
 import time
@@ -74,6 +73,7 @@ class SSEListener:
         self.full_text = ""
         self.sections = StreamSections(response_color="")
         self.chunks_seen = 0
+        self.reasoning_text = ""
         self.completed = False
         self.errored = False
         self.error_msg = ""
@@ -128,6 +128,7 @@ class SSEListener:
                                 if isinstance(artifact, dict) and artifact.get("text"):
                                     text = artifact["text"]
                                     if is_reasoning_artifact(artifact):
+                                        self.reasoning_text += text
                                         self.sections.reasoning_chunk(text)
                                     elif local_text and (
                                         text == local_text
@@ -136,6 +137,7 @@ class SSEListener:
                                     ):
                                         pass  # accumulated / duplicate chunk
                                     else:
+                                        self.chunks_seen += 1
                                         self.sections.response_chunk(text)
                                         local_text += text
                                         self.full_text = local_text
@@ -169,6 +171,7 @@ class SSEListener:
         self.full_text = ""
         self.sections.reset()
         self.chunks_seen = 0
+        self.reasoning_text = ""
         self.completed = False
         self.errored = False
         self.error_msg = ""
@@ -272,6 +275,9 @@ def main():
     streamed_text = sse.full_text
     _record("received streamed tokens", bool(streamed_text),
             f"chunks={sse.chunks_seen} chars={len(streamed_text)}")
+    if args.hide_reasoning:
+        _record("show_reasoning=false suppresses reasoning artifacts",
+                not sse.reasoning_text, f"reasoning_chars={len(sse.reasoning_text)}")
 
     _section("05 — COMPLETED status over SSE")
     if sse.errored:
@@ -299,13 +305,16 @@ def main():
     pi_url = cfg["pi_url"]
     pi_key = cfg["pi_key"]
     pi_text = ""
+    session_id = None
     try:
         # POST /sessions -> {sessionId, sessionFile}. Pass the configured
         # default model: the sidecar session boots with pi's own default
         # otherwise (a provider the compat key is not valid for).
         create_body = {"cwd": env.get("PI_CWD", "/workspace")}
-        if env.get("PI_MODEL"):
-            create_body["model"] = env["PI_MODEL"]
+        model = env.get("PI_SIDE_MODEL") or env.get("PI_MODEL")
+        compat_model = env.get("PI_COMPAT_MODEL") or env.get("OPENAI_COMPAT_MODEL")
+        if model or compat_model:
+            create_body["model"] = model or f"compat/{compat_model}"
         r = requests.post(
             f"{pi_url}/sessions",
             headers={"Content-Type": "application/json", "X-Secret-Key": pi_key},
@@ -338,6 +347,12 @@ def main():
                     event = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                if event.get("type") == "extension_ui_request" and event.get("method") == "confirm":
+                    requests.post(
+                        f"{pi_url}/sessions/{session_id}/ui-response",
+                        headers={"X-Secret-Key": pi_key},
+                        json={"id": event["id"], "confirmed": True}, timeout=15,
+                    ).raise_for_status()
                 if event.get("type") == "message_update":
                     if ((event.get("assistantMessageEvent") or {}).get("type")) == "text_delta":
                         pi_text += event["assistantMessageEvent"].get("delta") or ""
@@ -350,6 +365,13 @@ def main():
                  + " chars=" + str(len(pi_text))) if pi_ok else "no streamed text")
     except Exception as e:
         _record("direct pi sidecar SSE streaming", False, str(e))
+    finally:
+        if session_id:
+            try:
+                requests.delete(f"{pi_url}/sessions/{session_id}",
+                                headers={"X-Secret-Key": pi_key}, timeout=15)
+            except requests.RequestException:
+                pass
 
     # Final
     print(f"\n{B}{'=' * 70}{RST}")

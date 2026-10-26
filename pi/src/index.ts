@@ -120,7 +120,7 @@ const resolveSecret = async (): Promise<string> => {
 
 // Base pi command line shared by every spawned session. Provider credentials
 // are inherited from the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...);
-// model selection rides PI_MODEL / PI_PROVIDER / PI_MODEL_ID.
+// model selection uses PI_SIDE_MODEL / PI_SIDE_PROVIDER / PI_SIDE_MODEL_ID.
 const buildBaseArgs = (): string[] => {
 	// The pi binary must ride in position 0 — PiRpc spawns command[0] with
 	// the tail as arguments. Spawn defaults read the PI_SIDE_* namespace

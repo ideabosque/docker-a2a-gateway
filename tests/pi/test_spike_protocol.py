@@ -141,6 +141,16 @@ def collect_run(spike: Sidecar, sid: str, message: str,
             continue
         event, etype = item
         events.append({"type": etype, **event})
+        # The bundled tool gate emits blocking dialogs even for this direct
+        # transport probe. Answer this test's dialogs so the tool-call and
+        # cancellation scenarios can finish with the gate enabled.
+        if etype == "extension_ui_request":
+            method = event.get("method")
+            if method in ("confirm", "select", "input", "editor"):
+                answer = {"confirmed": True} if method == "confirm" else {"cancelled": True}
+                response = spike.ui_response(sid, {"id": event["id"], **answer})
+                if response.status_code != 200:
+                    raise RuntimeError(f"dialog response HTTP {response.status_code}")
         if etype == "message_update":
             sub = event.get("assistantMessageEvent") or {}
             if sub.get("type") == "text_delta":
@@ -187,7 +197,6 @@ def main():
 
     env = load_env()
     # host-reachable sidecar URL: PI_API_URL is in-container (http://pi:3300).
-    from urllib.parse import urlparse
     pi_port = env.get("PI_PORT", "3300")
     base = args.pi_url or f"http://127.0.0.1:{pi_port}"
     key = env.get("PI_SECRET_KEY", "")
@@ -228,7 +237,6 @@ def main():
         g = spike.get_session(sid)
         body = g.json() if g.status_code == 200 else {}
         state = body.get("state", {}) or {}
-        stats = body.get("stats", {}) or {}
         session_dir_via_stats = {
             "get_status": g.status_code,
             "state_sessionFile": state.get("sessionFile"),
@@ -419,7 +427,7 @@ def main():
                        "Without any preamble: what exact answer did I ask you to "
                        "say in my very first message?")
     resume["resume_text"] = run4["text"][:300]
-    resumed_ok = f"PI-SPIKE-" in run4["text"] and len(run4["text"]) < 40
+    resumed_ok = "PI-SPIKE-" in run4["text"] and len(run4["text"]) < 40
     _ok("resumed session kept history (echoed the first-turn answer)", resumed_ok,
         f"answer={run4['text'][:80]!r}")
     # and the process is live again afterwards

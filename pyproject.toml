@@ -1,7 +1,7 @@
 [project]
 name            = "docker-a2a-gateway"
 version         = "0.0.1"
-description     = "Container image exposing the native A2A protocol surface via the SilvaEngine Gateway, bridging A2A tasks to a Hermes Agent API Server and/or an OpenClaw Gateway (both optional, profile-gated siblings)"
+description     = "Container image exposing the native A2A protocol surface via the SilvaEngine Gateway, bridging A2A tasks to optional Hermes, OpenClaw, goose, and pi backends"
 authors         = [{ name = "Idea Bosque", email = "ideabosque@gmail.com" }]
 requires-python = ">=3.10"
 # Runtime dependencies are pinned in requirements.txt (git-sourced modules).

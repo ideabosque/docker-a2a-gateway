@@ -7,7 +7,8 @@ Prerequisites (bundled sidecar + the tool-approval extension):
     - `pi` compose profile UP; the sidecar's PI_SIDE_APPROVE_TOOLS gates
       bash/edit/write (extension installed into the agent dir by the
       entrypoint)
-    - the a2a-pi-agent registered with metadata pi_permission_mode=ask
+    - a registered pi agent; the script clones it into a temporary ask-mode
+      test agent and removes that agent after the scenarios
 
 Flow per scenario (approve / deny):
     1. Stream a prompt that runs the bash tool (echo pi-approval-<token>).
@@ -24,7 +25,7 @@ completes WITHOUT running it. Exit non-zero on failure.
 
 Usage:
     python tests/pi/test_approval_live.py
-    python tests/pi/test_approval_live.py --tool bash
+    python tests/pi/test_approval_live.py --agent-uuid a2a-pi-agent
 
 Only third-party dependency: requests
 Author: bibow
@@ -37,6 +38,8 @@ if hasattr(_sys.stdout, "reconfigure"):
     _sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import argparse
+from contextlib import contextmanager
+import json
 import sys
 import time
 import uuid
@@ -56,6 +59,43 @@ from chatbot_stream import SSEListener, answer_permission
 __author__ = "bibow"
 
 _results: list = []
+
+
+@contextmanager
+def ask_mode_agent(cfg):
+    """Keep the seeded agent's policy intact while testing interactive approvals."""
+    headers = {"Authorization": f"Bearer {cfg['token']}", "Part-Id": cfg["part_id"]}
+    url = f"{cfg['gateway_url']}/{cfg['endpoint_id']}/a2a_core_graphql"
+
+    def graphql(query, variables):
+        response = requests.post(url, headers=headers,
+                                 json={"query": query, "variables": variables}, timeout=30)
+        response.raise_for_status()
+        body = response.json()
+        if body.get("errors"):
+            raise RuntimeError(str(body["errors"]))
+        return body["data"]
+
+    source = graphql("query($id: String!) { a2aAgent(agentId: $id) { metadata } }",
+                     {"id": cfg["agent_uuid"]}).get("a2aAgent")
+    if not source:
+        raise RuntimeError("Configured pi agent was not found")
+    metadata = source.get("metadata") or {}
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    metadata = {**metadata, "agent_type": "pi", "pi_permission_mode": "ask"}
+    agent_id = f"pi-approval-test-{uuid.uuid4().hex[:12]}"
+    graphql("""mutation($id: String, $endpoint: String!, $part: String!, $url: String!, $meta: JSON) {
+      insertUpdateA2aAgent(agentId: $id, agentName: "pi approval test", endpointId: $endpoint,
+        partId: $part, endpointUrl: $url, metadata: $meta, updatedBy: "pi-test") {
+        a2aAgent { agentId }
+      }
+    }""", {"id": agent_id, "endpoint": cfg["endpoint_id"], "part": cfg["part_id"],
+           "url": f"{cfg['gateway_url']}/{cfg['endpoint_id']}/a2a", "meta": metadata})
+    try:
+        yield {**cfg, "agent_uuid": agent_id}
+    finally:
+        graphql("mutation($id: String!) { deleteA2aAgent(agentId: $id) { ok } }", {"id": agent_id})
 
 
 def _record(name: str, ok: bool, detail: str = "") -> None:
@@ -103,7 +143,6 @@ def run_scenario(cfg, approved: bool, label: str) -> None:
         except Exception as e:
             send_result["error"] = str(e)
 
-    sender = _sys.modules.setdefault("threading", sys.modules["threading"])
     import threading
     t = threading.Thread(target=_send, daemon=True)
     t.start()
@@ -199,8 +238,9 @@ def main():
         if not pi_sidecar_ok(cfg["pi_url"], cfg["pi_key"]):
             print(f"  {Y}(continuing — pi sidecar may be external){RST}")
 
-    run_scenario(cfg, approved=True, label="Scenario A — APPROVE")
-    run_scenario(cfg, approved=False, label="Scenario B — DENY")
+    with ask_mode_agent(cfg) as test_cfg:
+        run_scenario(test_cfg, approved=True, label="Scenario A — APPROVE")
+        run_scenario(test_cfg, approved=False, label="Scenario B — DENY")
 
     passed = sum(1 for x in _results if x)
     total = len(_results)

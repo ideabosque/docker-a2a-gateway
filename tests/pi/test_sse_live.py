@@ -300,11 +300,16 @@ def main():
     pi_key = cfg["pi_key"]
     pi_text = ""
     try:
-        # POST /sessions -> {sessionId, sessionFile}
+        # POST /sessions -> {sessionId, sessionFile}. Pass the configured
+        # default model: the sidecar session boots with pi's own default
+        # otherwise (a provider the compat key is not valid for).
+        create_body = {"cwd": env.get("PI_CWD", "/workspace")}
+        if env.get("PI_MODEL"):
+            create_body["model"] = env["PI_MODEL"]
         r = requests.post(
             f"{pi_url}/sessions",
             headers={"Content-Type": "application/json", "X-Secret-Key": pi_key},
-            json={"cwd": os.getenv("PI_CWD", "/workspace")},
+            json=create_body,
             timeout=30,
         )
         if r.status_code != 200:

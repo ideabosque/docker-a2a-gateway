@@ -10,14 +10,24 @@
  *   PI_DATA_DIR             sidecar state dir (default /data)
  *   PI_SESSION_DIR          pi --session-dir (default $PI_DATA_DIR/sessions)
  *   PI_CWD                  default agent cwd (default /workspace)
- *   PI_MODEL                provider/modelId default (e.g. anthropic/...)
- *   PI_THINKING             default thinking level (off … max)
- *   PI_PROVIDER             explicit provider (overrides PI_MODEL prefix)
- *   PI_MODEL_ID             explicit model id (overrides PI_MODEL suffix)
- *   PI_TOOLS                comma list passed as pi --tools
- *   PI_EXTRA_ARGS           extra pi CLI flags (space-split, unquoted)
- *   PI_APPROVE              1 → allow project-trust gating (default 0 = --no-approve)
- *   PI_OFFLINE              1 → --offline
+ *   PI_SIDE_MODEL           provider/modelId default (e.g. anthropic/...)
+ *   PI_SIDE_THINKING        default thinking level (off … max)
+ *   PI_SIDE_PROVIDER        explicit provider (overrides PI_SIDE_MODEL prefix)
+ *   PI_SIDE_MODEL_ID        explicit model id (overrides PI_SIDE_MODEL suffix)
+ *   PI_SIDE_TOOLS           comma list passed as pi --tools
+ *   PI_SIDE_EXTRA_ARGS      extra pi CLI flags (space-split, unquoted)
+ *   PI_SIDE_APPROVE         1 → allow project-trust gating (default 0 = --no-approve)
+ *   PI_SIDE_OFFLINE         1 → --offline
+ *   PI_SIDE_NO_EXTENSIONS   1 → --no-extensions
+ *
+ * P1 SPIKE FINDING (2026-10-25): pi itself EXPORTS `PI_PROVIDER` / `PI_MODEL`
+ * into the shells of its own tool runs (pi docs environment-variables.md) —
+ * and on dev machines those very names are often already in the environment.
+ * The sidecar's spawn defaults therefore use the PI_SIDE_* namespace, and the
+ * pi child env strips PI_MODEL/PI_PROVIDER/PI_THINKING/PI_TOOLS entirely (see
+ * pool.spawnEnv) so a host value can never masquerade as sidecar config
+ * (verified: host PI_PROVIDER=ollama-cloud made resumed sessions boot-fail
+ * with `Unknown provider "ollama-cloud"`).
  *   PI_MAX_PROCESSES        live process cap (default 8)
  *   PI_IDLE_TIMEOUT_S       idle process reaping (default 1800; 0 disables)
  *   PI_STREAM_TIMEOUT_S     per-run stream timeout (default 300; 0 disables)
@@ -112,18 +122,21 @@ const resolveSecret = async (): Promise<string> => {
 // are inherited from the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...);
 // model selection rides PI_MODEL / PI_PROVIDER / PI_MODEL_ID.
 const buildBaseArgs = (): string[] => {
-	const args = ["--mode", "rpc"];
-	const { provider, model } = parseModelSpec(process.env.PI_MODEL);
-	const providerOverride = process.env.PI_PROVIDER || provider;
-	const modelOverride = process.env.PI_MODEL_ID || model;
+	// The pi binary must ride in position 0 — PiRpc spawns command[0] with
+	// the tail as arguments. Spawn defaults read the PI_SIDE_* namespace
+	// (never pi's own PI_MODEL/PI_PROVIDER output vars — see the header).
+	const args = [process.env.PI_BIN || "pi", "--mode", "rpc"];
+	const { provider, model } = parseModelSpec(process.env.PI_SIDE_MODEL);
+	const providerOverride = process.env.PI_SIDE_PROVIDER || provider;
+	const modelOverride = process.env.PI_SIDE_MODEL_ID || model;
 	if (providerOverride) args.push("--provider", providerOverride);
 	if (modelOverride) args.push("--model", modelOverride);
-	if (process.env.PI_THINKING) args.push("--thinking", process.env.PI_THINKING);
-	if (process.env.PI_TOOLS) args.push("--tools", process.env.PI_TOOLS);
-	if (!boolEnv("PI_APPROVE")) args.push("--no-approve");
-	if (boolEnv("PI_OFFLINE")) args.push("--offline");
-	if (boolEnv("PI_NO_EXTENSIONS", false)) args.push("--no-extensions");
-	const extra = (process.env.PI_EXTRA_ARGS ?? "").trim();
+	if (process.env.PI_SIDE_THINKING) args.push("--thinking", process.env.PI_SIDE_THINKING);
+	if (process.env.PI_SIDE_TOOLS) args.push("--tools", process.env.PI_SIDE_TOOLS);
+	if (!boolEnv("PI_SIDE_APPROVE")) args.push("--no-approve");
+	if (boolEnv("PI_SIDE_OFFLINE")) args.push("--offline");
+	if (boolEnv("PI_SIDE_NO_EXTENSIONS", false)) args.push("--no-extensions");
+	const extra = (process.env.PI_SIDE_EXTRA_ARGS ?? "").trim();
 	if (extra) {
 		// Unquoted, shell-style word splitting (same contract as
 		// EXTRA_GOOSE_SERVE_ARGS in the goose sibling).

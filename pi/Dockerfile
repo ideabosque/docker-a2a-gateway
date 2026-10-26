@@ -58,13 +58,14 @@ WORKDIR /app
 # pi-data volume.
 RUN mkdir -p /app /root/.pi/agent /data/sessions /workspace /var/log
 
-COPY package.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 COPY test ./test
 
 # Build the sidecar. devDependencies (typescript, vitest) are installed only
 # for the build and pruned afterwards — the runtime server is stdlib-only.
-RUN npm install --include=dev --no-audit --no-fund \
+# npm ci deterministically installs from the committed package-lock.json.
+RUN npm ci --include=dev --no-audit --no-fund \
     && npm run build \
     && npm prune --omit=dev \
     && rm -rf test src

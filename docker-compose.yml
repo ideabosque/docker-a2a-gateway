@@ -436,23 +436,35 @@ services:
       # pi-data volume (server-secret.txt). Set PI_SECRET_KEY (gateway side)
       # to the SAME value in .env.
       - PI_SIDECAR_SECRET_KEY=${PI_SIDECAR_SECRET_KEY:-}
+      # The container ALWAYS listens on 3300 — PI_PORT from .env is the
+      # published HOST port (port-offset convention, cf. CONTAINER_PORT vs
+      # GATEWAY_PORT for the gateway), so override the env_file passthrough
+      # here to keep the host:container ports decoupled.
+      - PI_PORT=3300
       # Default model/thinking for spawned sessions ("provider/modelId");
       # per-agent metadata (pi_model / pi_thinking) overrides these.
-      - PI_MODEL=${PI_MODEL:-}
-      - PI_PROVIDER=${PI_PROVIDER:-}
-      - PI_MODEL_ID=${PI_MODEL_ID:-}
-      - PI_THINKING=${PI_THINKING:-}
-      - PI_TOOLS=${PI_TOOLS:-}
-      - PI_EXTRA_ARGS=${PI_EXTRA_ARGS:-}
+      # P1 SPIKE (2026-10-25): pi itself exports PI_PROVIDER / PI_MODEL to its
+      # tool shells, so the sidecar's spawn defaults use the PI_SIDE_*
+      # namespace and the sidecar STRIPS PI_MODEL/PI_PROVIDER/PI_THINKING/
+      # PI_TOOLS from the pi child env — host-shell pi state can no longer
+      # leak into the sidecar's spawn options.
+      - PI_SIDE_MODEL=${PI_SIDE_MODEL:-}
+      - PI_SIDE_PROVIDER=${PI_SIDE_PROVIDER:-}
+      - PI_SIDE_MODEL_ID=${PI_SIDE_MODEL_ID:-}
+      - PI_SIDE_THINKING=${PI_SIDE_THINKING:-}
+      - PI_SIDE_TOOLS=${PI_SIDE_TOOLS:-}
+      - PI_SIDE_EXTRA_ARGS=${PI_SIDE_EXTRA_ARGS:-}
       # 1 keeps pi's project-trust gating (asks on the TUI only); 0 (default)
       # runs --no-approve, right for a headless container.
-      - PI_APPROVE=${PI_APPROVE:-0}
+      - PI_SIDE_APPROVE=${PI_SIDE_APPROVE:-0}
+      - PI_SIDE_OFFLINE=${PI_SIDE_OFFLINE:-0}
+      - PI_SIDE_NO_EXTENSIONS=${PI_SIDE_NO_EXTENSIONS:-0}
       # First-start compatible-endpoint config: writes /root/.pi/agent/
       # models.json targeting PI_COMPAT_BASE_URL (default: the shared
       # OPENAI_COMPAT_* endpoint) with env-interpolated ${PI_COMPAT_API_KEY}.
       - PI_COMPAT_BASE_URL=${PI_COMPAT_BASE_URL:-${OPENAI_COMPAT_BASE_URL:-}}
-      - PI_COMPAT_API_KEY=${PI_COMPAT_API_KEY:-}
-      - PI_COMPAT_MODEL=${PI_COMPAT_MODEL:-}
+      - PI_COMPAT_API_KEY=${PI_COMPAT_API_KEY:-${OPENAI_COMPAT_API_KEY:-}}
+      - PI_COMPAT_MODEL=${PI_COMPAT_MODEL:-${OPENAI_COMPAT_MODEL:-}}
       # Provider credentials read directly by pi (see pi docs providers.md;
       # add more via .env and pass them here the same way).
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}

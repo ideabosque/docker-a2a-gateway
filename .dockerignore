@@ -21,3 +21,10 @@ __pycache__/
 # either — harmless in the build context either way. The openclaw/ sibling
 # build context no longer has its own .ssh — it shares the repo-root ./.ssh
 # via a runtime bind mount instead (see docker-compose.yml).
+
+# pi sibling — its build context and deps are handled by pi/Dockerfile;
+# keep node_modules/dist out of the ROOT build context (the gateway builds
+# use context=. and would otherwise upload the whole tree).
+pi/node_modules
+pi/dist
+pi/*.tsbuildinfo

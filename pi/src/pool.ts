@@ -59,12 +59,16 @@ export interface PoolSession {
 	rpc: PiRpc;
 	streaming: boolean;
 	lastUsed: number;
-	busyBehaviorPrompt?: JsonRecord;
+	/** "provider/modelId" this session was created with (persisted for resume). */
+	model?: string;
+	thinking?: string;
 }
 
 export class SessionPool {
 	private readonly sessions = new Map<string, PoolSession>();
-	private readonly indexer: Promise<Record<string, { sessionFile: string; cwd: string }>>;
+	private readonly indexer: Promise<
+		Record<string, { sessionFile: string; cwd: string; model?: string; thinking?: string }>
+	>;
 	private reaper: NodeJS.Timeout | null = null;
 
 	constructor(private readonly init: PoolInit) {
@@ -137,6 +141,8 @@ export class SessionPool {
 			rpc,
 			streaming: Boolean(state["isStreaming"]),
 			lastUsed: Date.now(),
+			...(opts.model ? { model: opts.model } : {}),
+			...(opts.thinking ? { thinking: opts.thinking } : {}),
 		};
 		this.sessions.set(id, session);
 		this.log("info", `session ${id} live (${resumeFile ? "resumed" : "new"}) file=${session.sessionFile}`);
@@ -154,8 +160,13 @@ export class SessionPool {
 		const index = await this.indexer;
 		const meta = index[id];
 		if (!meta?.sessionFile) return undefined;
-		// Resume: new process + switch_session onto the stored file.
-		return this.create({ cwd: meta.cwd }, meta.sessionFile);
+		// Resume: new process + switch_session onto the stored file, booted
+		// with the model (and thinking level) the session was created with.
+		return this.create(
+			{ cwd: meta.cwd, ...(meta.model ? { model: meta.model } : {}),
+			  ...(meta.thinking ? { thinking: meta.thinking } : {}) },
+			meta.sessionFile,
+		);
 	}
 
 	setState(id: string, patch: Partial<Pick<PoolSession, "streaming">>): void {
@@ -209,6 +220,11 @@ export class SessionPool {
 				sessionFile: session.sessionFile,
 				cwd: session.cwd,
 			};
+			// Resumed sessions boot with the model they were created with —
+			// pi rejects unknown providers (P1 spike: a host PI_PROVIDER leak
+			// otherwise wins the boot for model-less resume).
+			if (session.model) index[id].model = session.model;
+			if (session.thinking) index[id].thinking = session.thinking;
 		}
 		try {
 			await writeFile(
@@ -220,10 +236,20 @@ export class SessionPool {
 		}
 	}
 
-	private async loadIndex(): Promise<Record<string, { sessionFile: string; cwd: string }>> {
+	private async loadIndex(): Promise<
+		Record<string, { sessionFile: string; cwd: string; model?: string; thinking?: string }>
+	> {
 		try {
-			const raw = await readFile(path.join(this.init.dataDir, "sessions-index.json"), "utf-8");
-			const parsed = JSON.parse(raw) as { sessions?: Record<string, { sessionFile: string; cwd: string }> };
+			const raw = await readFile(
+				path.join(this.init.dataDir, "sessions-index.json"),
+				"utf-8",
+			);
+			const parsed = JSON.parse(raw) as {
+				sessions?: Record<
+					string,
+					{ sessionFile: string; cwd: string; model?: string; thinking?: string }
+				>;
+			};
 			return parsed.sessions ?? {};
 		} catch {
 			return {};
@@ -252,7 +278,7 @@ export class SessionPool {
 		const rpc = new PiRpc({
 			command: args,
 			cwd,
-			env: this.init.env,
+			env: { ...spawnEnvClean(), ...(this.init.env ?? {}) },
 			onEvent: (event) => this.init.onEvent?.(id, event),
 			onStderr: (line) => this.init.onStderr?.(id, line),
 			onExit: (code, signal) => {
@@ -272,6 +298,29 @@ export class SessionPool {
 		else if (level === "error") console.error(message);
 		else console.log(message);
 	}
+}
+
+/**
+ * The pi child inherits the sidecar's environment MINUS the variables pi
+ * itself exports/uses for its own tool shells (PI_MODEL / PI_PROVIDER /
+ * PI_THINKING / PI_TOOLS). P1 spike (2026-10-25): on dev hosts those names
+ * hold the operator's local pi state (e.g. PI_PROVIDER=ollama-cloud), and a
+ * naive env passthrough made model-less sessions boot with a provider pi
+ * rejects ("Unknown provider"). Provider credentials and the PI_COMPAT_*
+ * interpolation targets are preserved.
+ */
+export function spawnEnvClean(): Record<string, string | undefined> {
+	const blocked = new Set([
+		"PI_MODEL",
+		"PI_PROVIDER",
+		"PI_THINKING",
+		"PI_TOOLS",
+		"PI_EXTRA_ARGS",
+		"PI_APPROVE",
+	]);
+	const env: Record<string, string | undefined> = { ...process.env };
+	for (const key of blocked) delete env[key];
+	return env;
 }
 
 export function parseModelSpec(spec: string | undefined): { provider?: string; model?: string } {

@@ -20,11 +20,13 @@
  * execution events, then message_end, turn_end, agent_end, agent_settled.
  */
 
-import { createWriteStream } from "node:fs";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
-const LOG = process.env.FAKE_PI_LOG ? createWriteStream(process.env.FAKE_PI_LOG, { flags: "a" }) : null;
+// Synchronous file logging: async write streams race process.exit on
+// Windows child pipes (writes were lost at shutdown).
+const LOG_PATH = process.env.FAKE_PI_LOG || null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const decoder = new StringDecoder("utf-8");
@@ -47,7 +49,13 @@ function emit(record, splitMs) {
 }
 
 function logCmd(cmd) {
-	if (LOG) LOG.write(JSON.stringify(cmd) + "\n");
+	if (LOG_PATH) {
+		try {
+			appendFileSync(LOG_PATH, JSON.stringify(cmd) + "\n");
+		} catch {
+			/* best effort */
+		}
+	}
 }
 
 // Unique per process: two sessions must never collide in the pool's map.
@@ -217,7 +225,6 @@ async function onLine(line) {
 }
 
 process.stderr.write("fake-pi ready\n");
-process.stdout.write("");
 
 // Strict LF-only framing (Unicode separators must NOT split records).
 process.stdin.on("data", (chunk) => {
@@ -229,7 +236,15 @@ process.stdin.on("data", (chunk) => {
 		if (rawLine.length) void onLine(rawLine);
 	}
 });
-process.stdin.on("end", () => {
-	if (LOG) LOG.write(JSON.stringify({ type: "__stdin_closed" }) + "\n");
+let closedDown = false;
+function shutdown() {
+	// pi (the real one) disposes its runtime and exits when stdin closes.
+	if (closedDown) return;
+	closedDown = true;
+	logCmd({ type: "__stdin_closed" });
 	process.exit(0);
-});
+}
+// "end" on an ended pipe; "close" as the Windows fallback ("end" is not
+// always delivered for child pipes on Windows).
+process.stdin.on("end", shutdown);
+process.stdin.on("close", shutdown);

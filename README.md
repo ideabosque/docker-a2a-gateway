@@ -834,8 +834,8 @@ live in `handlers/pi_client.py`; design notes live in the plugin's
 | `PI_API_URL` | `http://pi:3300` | Where the gateway reaches the pi sidecar. Keep the bundled value when the `pi` profile is on; point it at your own sidecar when it is off |
 | `PI_SECRET_KEY` | — | Sent as `X-Secret-Key` on every request; **must equal** the sidecar's `PI_SIDECAR_SECRET_KEY` |
 | `PI_CWD` | `/workspace` | Working directory for new pi sessions (inside the pi container) |
-| `PI_MODEL` | — | Default model as `provider/modelId` (e.g. `anthropic/claude-sonnet-4-5`); per-agent metadata `pi_model` overrides. Credentials are pi's own provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... — pi docs `providers.md`); a custom OpenAI-compatible endpoint is configured via `PI_COMPAT_*` below |
-| `PI_THINKING` | — | Default thinking level (`off` … `max`); per-agent metadata `pi_thinking` overrides. Reasoning streams as tagged chunks (see [Reasoning](#reasoning)); `A2A_SHOW_REASONING` still applies |
+| `PI_SIDE_MODEL` | — | Default model as `provider/modelId` (e.g. `anthropic/claude-sonnet-4-5`); per-agent metadata `pi_model` overrides. Credentials are pi's own provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... — pi docs `providers.md`); a custom OpenAI-compatible endpoint is configured via `PI_COMPAT_*` below. (`PI_SIDE_*`, not pi's own `PI_MODEL`/`PI_PROVIDER` — those names are exported by pi into its tool shells, and hosts that run pi locally carry them; see the spike note under the bundled section) |
+| `PI_SIDE_THINKING` | — | Default thinking level (`off` … `max`); per-agent metadata `pi_thinking` overrides. Reasoning streams as tagged chunks (see [Reasoning](#reasoning)); `A2A_SHOW_REASONING` still applies |
 | `PI_PERMISSION_MODE` | `auto_allow` | How the bridge answers pi **extension UI dialogs** (`auto_allow`: confirm + first select option, `deny`: cancel everything, `ask`: `INPUT_REQUIRED` until approval, long-lived gateway only). pi's built-in tools never ask — the pi container is the boundary |
 | `PI_BUSY_BEHAVIOR` | `followUp` | What a second message does while pi is still streaming: `followUp` (queue until the agent stops), `steer` (deliver before the next LLM call), or `reject` |
 | `PI_STREAM_TIMEOUT` / `PI_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; how long `ask` waits before cancelling a dialog |
@@ -849,10 +849,24 @@ live in `handlers/pi_client.py`; design notes live in the plugin's
 | `PI_CONTAINER_NAME` | `container-pi` | Container name |
 | `PI_SIDECAR_SECRET_KEY` | generated on first start | Sidecar shared secret — **required**. Set `PI_SECRET_KEY` to the same value. If empty, first start generates one, prints it, and saves it to `/data/server-secret.txt` in the `pi-data` volume |
 | `PI_COMPAT_BASE_URL` / `PI_COMPAT_API_KEY` / `PI_COMPAT_MODEL` | — / — / `local-model` | First-start compatible-endpoint config (pi docs `models.md`): writes `/root/.pi/agent/models.json` targeting `PI_COMPAT_BASE_URL` (defaults to the shared `OPENAI_COMPAT_BASE_URL`) with `$PI_COMPAT_API_KEY` environment interpolation — use `PI_MODEL=compat/<PI_COMPAT_MODEL>` |
-| `PI_PROVIDER` / `PI_MODEL_ID` | — | Explicit provider/model override (falls back to `PI_MODEL`'s `provider/` prefix) |
-| `PI_TOOLS` | — | Comma list for `pi --tools` (default: pi's own selection — `read`, `bash`, `edit`, `write`) |
-| `PI_EXTRA_ARGS` | — | Extra pi CLI flags per session, e.g. `--no-extensions --offline` |
-| `PI_APPROVE` | `0` | `0` runs `--no-approve` (headless: ignore trust-gated project-local files); `1` keeps pi's project-trust gating |
+| `PI_SIDE_PROVIDER` / `PI_SIDE_MODEL_ID` | — | Explicit provider/model override (falls back to `PI_SIDE_MODEL`'s `provider/` prefix) |
+| `PI_SIDE_TOOLS` | — | Comma list for `pi --tools` (default: pi's own selection — `read`, `bash`, `edit`, `write`) |
+| `PI_SIDE_EXTRA_ARGS` | — | Extra pi CLI flags per session, e.g. `--no-extensions --offline` |
+| `PI_SIDE_APPROVE` | `0` | `0` runs `--no-approve` (headless: ignore trust-gated project-local files); `1` keeps pi's project-trust gating |
+| `PI_SIDE_OFFLINE` / `PI_SIDE_NO_EXTENSIONS` | `0` | Run `pi --offline` / `--no-extensions` for every session |
+
+**pi sidecar P1 spike note (2026-10-25).** pi *exports* `PI_PROVIDER` and
+`PI_MODEL` into the shells of its tool runs (pi docs
+`environment-variables.md`), and dev hosts that run pi locally often already
+carry them in the environment — compose host-env precedence would silently
+feed them into the sidecar (verified: a resumed boot failed with
+`Unknown provider "ollama-cloud"`). The sidecar therefore:
+reads its spawn defaults from `PI_SIDE_*`, **strips**
+`PI_MODEL`/`PI_PROVIDER`/`PI_THINKING`/`PI_TOOLS` from the pi child
+environment, and persists each session's model in the resume index so
+re-opened sessions boot with their own model. Provider credentials
+(`ANTHROPIC_API_KEY`, ...) and `PI_COMPAT_*` (models.json interpolation)
+still pass through.
 | `PI_DATA_FOLDER` / `PI_AGENT_DIR_FOLDER` | `pi-data` / `pi-agent` | Volumes for sidecar state (secret, session files, resume index) / pi user config (`settings.json`, `models.json`) |
 | `PI_WORKSPACE_FOLDER` | `./www/pi-workspace` | Host folder mounted at `/workspace` — **kept separate from `www/projects`**: the gateway imports nothing from the pi workspace |
 
@@ -1259,6 +1273,7 @@ pip install requests
 | [tests/pi/test_gateway_live.py](tests/pi/test_gateway_live.py) | pi | E2E suite | Same nine steps as the Hermes suite; step 01 probes the sidecar `GET /health` |
 | [tests/pi/test_sse_live.py](tests/pi/test_sse_live.py) | pi | E2E suite | 7 checks: the Hermes SSE checks plus a direct sidecar SSE prompt and a reasoning check |
 | [tests/pi/test_chatbot.py](tests/pi/test_chatbot.py) | pi | interactive | REPL against the A2A surface with live SSE streaming |
+| [tests/pi/test_spike_protocol.py](tests/pi/test_spike_protocol.py) | pi | P1 spike | Drives the sidecar directly (health, sessions, prompts, thinking, tool call, 409/followUp, abort, resume) and captures a transcript (`--out`); the acceptance evidence for the pinned pi version |
 | [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | all | library | Shared helpers — not run directly |
 
 

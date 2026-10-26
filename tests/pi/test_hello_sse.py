@@ -46,6 +46,7 @@ from a2a_test_utils import (
     B, C, D, G, R, Y, RST,
     is_reasoning_artifact, StreamSections,
     extract_text, jsonrpc_error, load_env, resolve_config,
+    pi_sidecar_ok,
     health_ok, message_send_params, send_a2a, unwrap_response,
 )
 
@@ -200,7 +201,7 @@ def main():
     if not args.no_health:
         if not health_ok("Gateway", cfg["gateway_url"]):
             return 1
-        if not health_ok("pi sidecar", cfg["pi_url"]):
+        if not pi_sidecar_ok(cfg["pi_url"], cfg["pi_key"]):
             print(f"  {Y}(continuing — pi may be external){RST}")
 
     sse = SSEListener(cfg["gateway_url"], cfg["token"],

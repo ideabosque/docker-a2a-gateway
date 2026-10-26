@@ -23,6 +23,7 @@ backups/*
 !www/projects/.gitkeep
 !www/hermes/.gitkeep
 !www/openclaw/.gitkeep
+!www/pi-workspace/.gitkeep
 *.bak
 __pycache__/
 *.pyc

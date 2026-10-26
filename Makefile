@@ -1,6 +1,6 @@
 .PHONY: build up down logs gateway-logs status restart shell health clean rebuild dev \
-        hermes-up hermes-down openclaw-up openclaw-down goose-up goose-down \
-        goose-test goose-chat \
+        hermes-up hermes-down openclaw-up openclaw-down goose-up goose-down pi-up pi-down \
+        goose-test goose-chat pi-test pi-chat \
         postgres-up postgres-down init
 
 # Overridable from the environment, e.g.
@@ -97,6 +97,24 @@ goose-test:
 # Interactive chatbot through the goose bridge (SSE streaming)
 goose-chat:
 	python tests/goose/test_chatbot.py
+
+# Bring up the bundled pi sibling (profile: pi) — the pi sidecar (HTTP + SSE at
+# / with X-Secret-Key auth), which drives `pi --mode rpc` child processes; the
+# gateway bridges to it at http://pi:3300.
+pi-up:
+	docker compose --profile pi up -d pi
+
+# Stop the bundled pi sibling (gateway stays up)
+pi-down:
+	docker compose --profile pi stop pi
+
+# Live E2E suite against the running gateway + pi sidecar
+pi-test:
+	python tests/pi/test_gateway_live.py
+
+# Interactive chatbot through the pi bridge (SSE streaming)
+pi-chat:
+	python tests/pi/test_chatbot.py
 
 # Bring up the bundled PostgreSQL sibling service (profile: postgres)
 postgres-up:

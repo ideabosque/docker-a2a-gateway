@@ -156,6 +156,10 @@ def _host_goose_url(env: Dict[str, str]) -> str:
     return _host_service_url(env, "GOOSE_API_URL", "GOOSE_PORT", "3284")
 
 
+def _host_pi_url(env: Dict[str, str]) -> str:
+    return _host_service_url(env, "PI_API_URL", "PI_PORT", "3300")
+
+
 def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     """Build a config dict from .env + explicit overrides.
 
@@ -181,6 +185,7 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     hermes_url = (overrides.get("hermes_url") or _host_hermes_url(env)).rstrip("/")
     openclaw_url = (overrides.get("openclaw_url") or _host_openclaw_url(env)).rstrip("/")
     goose_url = (overrides.get("goose_url") or _host_goose_url(env)).rstrip("/")
+    pi_url = (overrides.get("pi_url") or _host_pi_url(env)).rstrip("/")
     endpoint_id = overrides.get("endpoint_id") or env.get("endpoint_id", "a2a")
     part_id = overrides.get("part_id") or env.get("part_id", "default")
     bridge = overrides.get("bridge")
@@ -190,6 +195,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         default_agent = env.get("A2A_HERMES_AGENT_UUID", "a2a-hermes-agent")
     elif bridge == "goose":
         default_agent = env.get("A2A_GOOSE_AGENT_UUID", "a2a-goose-agent")
+    elif bridge == "pi":
+        default_agent = env.get("A2A_PI_AGENT_UUID", "a2a-pi-agent")
     else:
         default_agent = env.get("A2A_DEFAULT_AGENT_UUID", "a2a-hermes-agent")
     agent_uuid = overrides.get("agent_uuid") or default_agent
@@ -202,6 +209,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         "openclaw_key": env.get("OPENCLAW_API_KEY", ""),
         "goose_url": goose_url,
         "goose_key": env.get("GOOSE_SECRET_KEY", ""),
+        "pi_url": pi_url,
+        "pi_key": env.get("PI_SECRET_KEY", ""),
         "endpoint_id": endpoint_id,
         "part_id": part_id,
         "agent_uuid": agent_uuid,
@@ -291,6 +300,25 @@ def goose_acp_ok(goose_url: str, goose_key: str = "",
         if r.status_code != 200:
             return False
         return "agentCapabilities" in (r.json().get("result") or {})
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# pi sidecar probe (the bundled pi sibling — HTTP + SSE over `pi --mode rpc`)
+# ---------------------------------------------------------------------------
+def pi_sidecar_ok(pi_url: str, pi_key: str = "",
+                  timeout: int = 15) -> bool:
+    """GET /health with the shared secret; expect {"status": "ok", ...}."""
+    try:
+        r = requests.get(
+            f"{pi_url}/health",
+            headers={"X-Secret-Key": pi_key},
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return False
+        return r.json().get("status") == "ok"
     except Exception:
         return False
 
@@ -478,6 +506,7 @@ __all__ = [
     "PROJECT_DIR", "ENV_FILE",
     "load_env", "mint_jwt", "resolve_token", "resolve_config",
     "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
+    "pi_sidecar_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
     "is_reasoning_artifact", "StreamSections",

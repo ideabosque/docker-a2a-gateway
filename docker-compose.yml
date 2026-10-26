@@ -19,6 +19,11 @@
 #                                OpenAI-compatible API the gateway can bridge
 #                                to. Enabled via the `openclaw` compose
 #                                profile.
+#   - pi          (optional)   — pi (pi.dev, coding agent) via a Node sidecar
+#                                driving `pi --mode rpc` child processes over
+#                                stdin/stdout JSONL (pi has no network server;
+#                                see ./pi/README.md). Enabled via the `pi`
+#                                compose profile.
 #
 # `hermes` and `openclaw` are independent options: enable one, the other,
 # both, or neither (and point *_API_URL at an external instance instead).
@@ -83,6 +88,9 @@ services:
         condition: service_started
         required: false
       goose:
+        condition: service_started
+        required: false
+      pi:
         condition: service_started
         required: false
     restart: unless-stopped
@@ -385,6 +393,83 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── Option E: pi Agent (optional sibling — enable with the `pi` profile)
+  # pi (https://github.com/earendil-works/pi, pi.dev) is a minimal, self-
+  # extensible terminal coding agent with NO network server. This sibling
+  # bundles a small Node sidecar (./pi) that spawns `pi --mode rpc` child
+  # processes over stdin/stdout JSONL (the official pi RPC protocol) and
+  # exposes HTTP + SSE. The gateway's PiAgentHandler (a2a_protocol_plugin)
+  # bridges A2A tasks to it at http://pi:3300 while this profile is active
+  # (PI_API_URL). pi's built-in tools run WITHOUT approval prompts — the pi
+  # process uses the container's own OS permissions, so this container is the
+  # security boundary (workspace mount only; keep it scoped).
+  pi:
+    build:
+      context: ./pi
+      dockerfile: Dockerfile
+      args:
+        # Pinned pi CLI version (npm @earendil-works/pi-coding-agent). The RPC
+        # behaviour is version-sensitive; re-run tests/pi/* on upgrades.
+        PI_VERSION: ${PI_VERSION:-1.4.0}
+    container_name: ${PI_CONTAINER_NAME:-container-pi}
+    profiles: ["pi"]
+    env_file:
+      - .env
+    ports:
+      - "${PI_PORT:-3300}:3300"
+    volumes:
+      # The pi agent's default working directory (PI_CWD=/workspace). pi tools
+      # run with the container's privileges; do not add broader host mounts.
+      # Deliberately SEPARATE from www/projects — the gateway imports nothing
+      # from the pi workspace.
+      - ${PI_WORKSPACE_FOLDER:-./www/pi-workspace}:/workspace
+      # Sidecar state: server-secret.txt, pi session files
+      # (--session-dir /data/sessions) and sessions-index.json so sessions
+      # survive sidecar restarts and can be re-opened transparently.
+      - ${PI_DATA_FOLDER:-pi-data}:/data
+      # pi user config (settings.json, models.json for custom endpoints).
+      # First start writes models.json when PI_COMPAT_BASE_URL is set.
+      - ${PI_AGENT_DIR_FOLDER:-pi-agent}:/root/.pi/agent
+    environment:
+      # Sidecar shared secret — REQUIRED; clients send it as X-Secret-Key. If
+      # empty, first start generates one, prints it, and saves it in the
+      # pi-data volume (server-secret.txt). Set PI_SECRET_KEY (gateway side)
+      # to the SAME value in .env.
+      - PI_SIDECAR_SECRET_KEY=${PI_SIDECAR_SECRET_KEY:-}
+      # Default model/thinking for spawned sessions ("provider/modelId");
+      # per-agent metadata (pi_model / pi_thinking) overrides these.
+      - PI_MODEL=${PI_MODEL:-}
+      - PI_PROVIDER=${PI_PROVIDER:-}
+      - PI_MODEL_ID=${PI_MODEL_ID:-}
+      - PI_THINKING=${PI_THINKING:-}
+      - PI_TOOLS=${PI_TOOLS:-}
+      - PI_EXTRA_ARGS=${PI_EXTRA_ARGS:-}
+      # 1 keeps pi's project-trust gating (asks on the TUI only); 0 (default)
+      # runs --no-approve, right for a headless container.
+      - PI_APPROVE=${PI_APPROVE:-0}
+      # First-start compatible-endpoint config: writes /root/.pi/agent/
+      # models.json targeting PI_COMPAT_BASE_URL (default: the shared
+      # OPENAI_COMPAT_* endpoint) with env-interpolated ${PI_COMPAT_API_KEY}.
+      - PI_COMPAT_BASE_URL=${PI_COMPAT_BASE_URL:-${OPENAI_COMPAT_BASE_URL:-}}
+      - PI_COMPAT_API_KEY=${PI_COMPAT_API_KEY:-}
+      - PI_COMPAT_MODEL=${PI_COMPAT_MODEL:-}
+      # Provider credentials read directly by pi (see pi docs providers.md;
+      # add more via .env and pass them here the same way).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_COMPAT_API_KEY:-${OPENAI_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_COMPAT_BASE_URL:-${OPENAI_BASE_URL:-}}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      # GET /health must return {"status":"ok",...} with the shared secret.
+      test: ["CMD", "/usr/local/bin/pi-healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+
 # A single default bridge network lets the gateway reach the `hermes` /
 # `openclaw` / `goose` services by name (http://hermes:8642,
 # http://openclaw:18789, http://goose:3284) when their respective profiles
@@ -396,3 +481,7 @@ volumes:
   # Goose agent config + server state, sessions db, and scoped workspace.
   goose-data:
   goose-share:
+  # pi sibling: sidecar state (secret, session files, resume index) and the
+  # pi user config dir (settings.json, models.json).
+  pi-data:
+  pi-agent:

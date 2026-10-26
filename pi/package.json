@@ -1,0 +1,20 @@
+{
+  "name": "pi-sidecar",
+  "version": "0.1.0",
+  "description": "HTTP + SSE sidecar wrapping pi --mode rpc for the docker-a2a-gateway A2A bridge",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

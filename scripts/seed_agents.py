@@ -1,5 +1,6 @@
 #!/opt/venv/bin/python
-"""Seed default a2a_agents records for the Hermes, OpenClaw and Goose bridges.
+"""Seed default a2a_agents records for the Hermes, OpenClaw, Goose and pi
+bridges.
 
 Runs after the gateway is healthy. Idempotent — uses insertUpdateA2aAgent
 (upsert), so it's safe to run on every container start.
@@ -8,6 +9,7 @@ Registers:
   - a2a-hermes-agent  → agent_type: "hermes"
   - a2a-openclaw-agent → agent_type: "openclaw"
   - a2a-goose-agent   → agent_type: "goose"
+  - a2a-pi-agent      → agent_type: "pi"
 
 Both with metadata containing agent_type so the A2A executor resolves
 the handler via AGENT_TYPE_MAP without relying on env-var fallbacks.
@@ -62,6 +64,16 @@ AGENTS = [
         "agentName": os.environ.get("A2A_GOOSE_AGENT_NAME", "Goose Agent"),
         "metadata": {
             "agent_type": os.environ.get("A2A_GOOSE_AGENT_TYPE", "goose"),
+        },
+    },
+    {
+        # pi sidecar sibling (compose profile: pi). pi's built-in tools run
+        # without approval prompts — the pi container is the boundary; this
+        # agent's pi_permission_mode governs only extension dialogs.
+        "agentId": os.environ.get("A2A_PI_AGENT_UUID", "a2a-pi-agent"),
+        "agentName": os.environ.get("A2A_PI_AGENT_NAME", "pi Agent"),
+        "metadata": {
+            "agent_type": os.environ.get("A2A_PI_AGENT_TYPE", "pi"),
         },
     },
     # Unattended Goose for scheduled runs (a2a_scheduler): nobody is there to

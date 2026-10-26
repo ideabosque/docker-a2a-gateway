@@ -70,6 +70,7 @@ RANDOM_VARS = [
     "API_SERVER_KEY",
     "OPENCLAW_GATEWAY_TOKEN",
     "GOOSE_SERVER__SECRET_KEY",
+    "PI_SIDECAR_SECRET_KEY",
     "PG_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
@@ -81,6 +82,8 @@ ALIAS_MAP = {
     "OPENCLAW_API_KEY": "OPENCLAW_GATEWAY_TOKEN",
     # goose serve rejects every ACP request whose X-Secret-Key differs.
     "GOOSE_SECRET_KEY": "GOOSE_SERVER__SECRET_KEY",
+    # The pi sidecar rejects every request whose X-Secret-Key differs.
+    "PI_SECRET_KEY": "PI_SIDECAR_SECRET_KEY",
 }
 
 # Host-published ports to offset (var -> .env.example default), only when not already set
@@ -91,6 +94,7 @@ PORT_VARS = {
     "HERMES_DASHBOARD_PORT": 9119,
     "OPENCLAW_PORT": 18789,
     "GOOSE_PORT": 3284,
+    "PI_PORT": 3300,
 }
 
 # CLI flag -> env var name, for values that should always override (even an

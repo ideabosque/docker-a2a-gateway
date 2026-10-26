@@ -16,6 +16,11 @@ combination** of three optional agent backends:
 - **[goose](https://github.com/aaif-goose/goose)** — an open-source AI agent
   run as `goose serve`, which speaks ACP (the Agent Client Protocol) over HTTP
   + SSE at `/acp`, bundled via the `goose` compose profile.
+- **[pi](https://github.com/earendil-works/pi)** (pi.dev) — a minimal,
+  self-extensible terminal coding agent; pi has no network server, so it is
+  bundled behind a small Node **sidecar** (`./pi`) that drives
+  `pi --mode rpc` child processes over stdin/stdout JSONL and serves HTTP +
+  SSE, via the `pi` compose profile.
 
 State persists to a bundled **PostgreSQL** backend (DynamoDB is not supported by
 this image). This repository **consolidates** what were previously separate
@@ -103,20 +108,20 @@ bind-mounts from the host — see
    ───────────▶ │               + a2a_protocol_plugin)                         │
   (JSON-RPC/SSE)│  /{ep}/a2a (JSON-RPC)   /{ep}/a2a_sse (SSE)                  │
                 │  /{ep}/a2a_core_graphql /{ep}/.well-known/agent-card.json    │
-                └──────┬──────────────────┬─────────────────┬──────────┬───────┘
-                       │                  │                 │          │
-          HermesAgentHandler  OpenClawAgentHandler  GooseAgentHandler  SQLAlchemy
-            HERMES_API_URL      OPENCLAW_API_URL      GOOSE_API_URL    PG_HOST
-                       ▼                  ▼                 ▼          ▼
+                └──┬──────────────┬────────────────┬─────────────┬────────────┬─┘
+                   │              │                │             │            │
+      HermesAgentHandler  OpenClawAgentHandler  GooseAgentHandler  PiAgentHandler  SQLAlchemy
+      HERMES_API_URL      OPENCLAW_API_URL      GOOSE_API_URL     PI_API_URL      PG_HOST
+                   ▼              ▼                ▼             ▼            ▼
          ┌──────────────────┐ ┌───────────────────┐ ┌───────────────┐ ┌──────────────┐
-         │ hermes [opt]     │ │ openclaw [opt]    │ │ goose [opt]   │ │ postgres     │
-         │ OpenAI-compat    │ │ OpenAI-compat     │ │ goose serve   │ │ [opt]        │
-         │ API + dashboard  │ │ /v1/chat/...      │ │ ACP at /acp   │ │ a2a_* tables │
+         │ hermes [opt]     │ │ openclaw [opt]    │ │ goose [opt]   │ │ pi [opt]     │
+         │ OpenAI-compat    │ │ OpenAI-compat     │ │ goose serve   │ │ sidecar ─▶   │
+         │ API + dashboard  │ │ /v1/chat/...      │ │ ACP at /acp   │ │ pi --mode rpc│
          └──────────────────┘ └───────────────────┘ └───────────────┘ └──────────────┘
 ```
 
 The gateway is the only always-on service. **Hermes**, **OpenClaw**,
-**goose**, and **PostgreSQL** are all profile-gated siblings — bundle
+**goose**, **pi**, and **PostgreSQL** are all profile-gated siblings — bundle
 whichever you need, or turn a profile off and point its `*_API_URL` / `PG_*`
 at an external instance. Which bridge a given A2A request reaches is decided
 per agent (see
@@ -136,13 +141,18 @@ goose are the same shape, swapping the handler and target):
                   → partition_key = "{ep}#{Part-Id}"
 3. a2a_daemon     dispatch_a2a → A2ADaemonExecutor
                   → resolve_agent(): agent metadata (DB) > setting dict > Config (env)
-4. Handler        HermesAgentHandler, OpenClawAgentHandler or GooseAgentHandler
-                   (per-agent metadata, or A2A_AI_AGENT_TYPE fallback)
+4. Handler        HermesAgentHandler, OpenClawAgentHandler, GooseAgentHandler
+                   or PiAgentHandler (per-agent metadata, or
+                   A2A_AI_AGENT_TYPE fallback)
 5. Bridge         Hermes:   POST {HERMES_API_URL}/v1/runs, GET .../events (SSE)
                   OpenClaw: POST {OPENCLAW_API_URL}/v1/chat/completions (stream)
                   goose:    POST/GET {GOOSE_API_URL}/acp — initialize,
                             session/new|load, session/prompt (SSE updates),
                             DELETE /acp when the turn ends
+                  pi:       POST {PI_API_URL}/sessions,
+                            POST .../prompt (SSE pi events + run_end),
+                            POST .../abort on cancel, POST .../ui-response
+                            for dialog answers
 6. Broadcast      token chunks → subscribers on GET /{ep}/a2a_sse
 7. Persist        task + messages written to PostgreSQL (a2a_* tables, RLS-scoped)
 8. Response       accumulated reply also returned in the HTTP JSON-RPC result
@@ -199,6 +209,13 @@ and `tests/goose/test_sse_live.py` verifies).
 │   ├── docker-entrypoint.sh     # server secret + first-start provider config, writes goose-serve.sh
 │   ├── healthcheck.sh           # compose healthcheck (ACP initialize probe)
 │   └── goose.ini                # supervisor program def for `goose serve`
+│   pi/                          # pi sibling: Node sidecar (HTTP + SSE) driving
+│                                #   `pi --mode rpc` (pi has no network server)
+│       ├── src/                 #   rpc driver, session pool, HTTP server
+│       ├── test/                #   framing + pool unit tests (fake pi)
+│       ├── Dockerfile           #   node:24 + pinned pi CLI (npm)
+│       ├── docker-entrypoint.sh #   first-start compat-endpoint config
+│       └── healthcheck.sh       #   GET /health with the shared secret
 ├── data/                       # persisted gateway state ➜ /app/data (also holds the generated addon manifest)
 ├── logs/                       # supervisor & gateway logs ➜ /var/log/supervisor
 ├── postgres_data/               # bundled PostgreSQL data dir (profile: postgres)
@@ -366,14 +383,16 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 | `COMPOSE_PROFILES=hermes` | gateway + bundled Hermes |
 | `COMPOSE_PROFILES=openclaw` | gateway + bundled OpenClaw |
 | `COMPOSE_PROFILES=goose` | gateway + bundled goose (`goose serve`) |
+| `COMPOSE_PROFILES=pi` | gateway + bundled pi sidecar (drives `pi --mode rpc`) |
 | `COMPOSE_PROFILES=hermes,openclaw` | gateway + Hermes + OpenClaw |
 | `COMPOSE_PROFILES=postgres,hermes` | gateway + Postgres + Hermes |
-| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose` | everything bundled (`.env.example` default) |
+| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi` | everything bundled |
 
 When a sibling is bundled, keep its host reference pointed at the service
 name: `PG_HOST=postgres`, `HERMES_API_URL=http://hermes:<API_SERVER_PORT>`,
-`OPENCLAW_API_URL=http://openclaw:18789`, `GOOSE_API_URL=http://goose:3284`.
-When a sibling is external, point those at your own instance (e.g.
+`OPENCLAW_API_URL=http://openclaw:18789`, `GOOSE_API_URL=http://goose:3284`,
+`PI_API_URL=http://pi:3300`. When a sibling is external, point those at your
+own instance (e.g.
 `PG_HOST=host.docker.internal`, `HERMES_API_URL=http://host.docker.internal:8642`).
 
 **goose secret.** `goose serve` always requires a shared secret, and
@@ -384,10 +403,17 @@ generates one on first start and prints it (`docker compose logs goose`); copy
 it into both variables and run
 `docker compose up -d --force-recreate a2a-gateway`.
 
+**pi secret.** Same contract, same generator: `PI_SIDECAR_SECRET_KEY` (pi
+sidecar) must equal `PI_SECRET_KEY` (gateway side); `scripts/generate_env.py`
+fills both. If the pi side is empty, the sidecar generates one on first start
+and saves it to `/data/server-secret.txt` in the `pi-data` volume
+(`docker exec container-pi cat /data/server-secret.txt`); copy it into both
+variables and recreate the gateway.
+
 ### Step 2 — Create the bind-mount directories for whichever siblings you bundle
 
 ```bash
-mkdir -p www/hermes www/projects www/goose-workspace
+mkdir -p www/hermes www/projects www/goose-workspace www/pi-workspace
 ```
 
 (Optional — Docker creates missing bind-mount folders on first `up`.)
@@ -554,6 +580,7 @@ for an instant end-to-end check.
 | `hermes` | `HERMES_DASHBOARD_PORT` (`9119`) | `HERMES_DASHBOARD_PORT` (`9119`) | Web dashboard (only when `HERMES_DASHBOARD=1`) |
 | `openclaw` | `OPENCLAW_PORT` (`18789`) | `18789` | OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`) |
 | `goose` | `GOOSE_PORT` (`3284`) | `3284` | `goose serve` ACP endpoint (`/acp`, requires `X-Secret-Key`) |
+| `pi` | `PI_PORT` (`3300`) | `3300` | pi sidecar (HTTP + SSE wrapping `pi --mode rpc`, requires `X-Secret-Key`) |
 | `postgres` | `POSTGRES_PORT` (`5432`) | `5432` | PostgreSQL |
 
 The gateway binds `GATEWAY_HOST` (`0.0.0.0`) inside the container. Host and
@@ -671,7 +698,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, `goose`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
+| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, `goose`, `pi`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
 | `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none (env-var fallback for Config) |
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
@@ -794,6 +821,41 @@ The gateway side of the goose integration (`GooseAgentHandler`). It talks to
 | `GOOSE_WORKSPACE_FOLDER` | `./www/goose-workspace` | Host folder mounted at `/workspace` (the agent's working directory) |
 | `EXTRA_GOOSE_SERVE_ARGS` | — | Extra `goose serve` flags, e.g. `--with-builtin memory` (`developer` is always loaded) |
 
+### pi bridge (a2a_protocol_plugin)
+
+The pi bridge forwards A2A tasks to the bundled pi sidecar, a Node service
+that drives `pi --mode rpc` child processes over stdin/stdout JSONL (pi has
+**no network server** — the sidecar is the HTTP+SSE boundary). Wire details
+live in `handlers/pi_client.py`; design notes live in the plugin's
+`docs/PI_INTEGRATION_PLAN.md` and `./pi/README.md`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PI_API_URL` | `http://pi:3300` | Where the gateway reaches the pi sidecar. Keep the bundled value when the `pi` profile is on; point it at your own sidecar when it is off |
+| `PI_SECRET_KEY` | — | Sent as `X-Secret-Key` on every request; **must equal** the sidecar's `PI_SIDECAR_SECRET_KEY` |
+| `PI_CWD` | `/workspace` | Working directory for new pi sessions (inside the pi container) |
+| `PI_MODEL` | — | Default model as `provider/modelId` (e.g. `anthropic/claude-sonnet-4-5`); per-agent metadata `pi_model` overrides. Credentials are pi's own provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... — pi docs `providers.md`); a custom OpenAI-compatible endpoint is configured via `PI_COMPAT_*` below |
+| `PI_THINKING` | — | Default thinking level (`off` … `max`); per-agent metadata `pi_thinking` overrides. Reasoning streams as tagged chunks (see [Reasoning](#reasoning)); `A2A_SHOW_REASONING` still applies |
+| `PI_PERMISSION_MODE` | `auto_allow` | How the bridge answers pi **extension UI dialogs** (`auto_allow`: confirm + first select option, `deny`: cancel everything, `ask`: `INPUT_REQUIRED` until approval, long-lived gateway only). pi's built-in tools never ask — the pi container is the boundary |
+| `PI_BUSY_BEHAVIOR` | `followUp` | What a second message does while pi is still streaming: `followUp` (queue until the agent stops), `steer` (deliver before the next LLM call), or `reject` |
+| `PI_STREAM_TIMEOUT` / `PI_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; how long `ask` waits before cancelling a dialog |
+
+### Bundled pi sibling (profile `pi`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PI_VERSION` | `1.4.0` | Pinned pi CLI release (npm `@earendil-works/pi-coding-agent`) installed by `./pi/Dockerfile`. Bump deliberately and re-run `tests/pi/*` — the RPC protocol is version-sensitive |
+| `PI_PORT` | `3300` | Published host port for the sidecar |
+| `PI_CONTAINER_NAME` | `container-pi` | Container name |
+| `PI_SIDECAR_SECRET_KEY` | generated on first start | Sidecar shared secret — **required**. Set `PI_SECRET_KEY` to the same value. If empty, first start generates one, prints it, and saves it to `/data/server-secret.txt` in the `pi-data` volume |
+| `PI_COMPAT_BASE_URL` / `PI_COMPAT_API_KEY` / `PI_COMPAT_MODEL` | — / — / `local-model` | First-start compatible-endpoint config (pi docs `models.md`): writes `/root/.pi/agent/models.json` targeting `PI_COMPAT_BASE_URL` (defaults to the shared `OPENAI_COMPAT_BASE_URL`) with `$PI_COMPAT_API_KEY` environment interpolation — use `PI_MODEL=compat/<PI_COMPAT_MODEL>` |
+| `PI_PROVIDER` / `PI_MODEL_ID` | — | Explicit provider/model override (falls back to `PI_MODEL`'s `provider/` prefix) |
+| `PI_TOOLS` | — | Comma list for `pi --tools` (default: pi's own selection — `read`, `bash`, `edit`, `write`) |
+| `PI_EXTRA_ARGS` | — | Extra pi CLI flags per session, e.g. `--no-extensions --offline` |
+| `PI_APPROVE` | `0` | `0` runs `--no-approve` (headless: ignore trust-gated project-local files); `1` keeps pi's project-trust gating |
+| `PI_DATA_FOLDER` / `PI_AGENT_DIR_FOLDER` | `pi-data` / `pi-agent` | Volumes for sidecar state (secret, session files, resume index) / pi user config (`settings.json`, `models.json`) |
+| `PI_WORKSPACE_FOLDER` | `./www/pi-workspace` | Host folder mounted at `/workspace` — **kept separate from `www/projects`**: the gateway imports nothing from the pi workspace |
+
 ### Shared
 
 | Variable | Default | Purpose |
@@ -836,7 +898,7 @@ for reference fragments per engine (KGE, RFQ, MCP, AI agent core, ...).
 
 ## 🔀 Running several bridges side by side
 
-All three agent bridges (Hermes, OpenClaw, goose) are auto-seeded into the
+All four agent bridges (Hermes, OpenClaw, goose, pi) are auto-seeded into the
 `a2a_agents` database table on container startup by `scripts/seed_agents.py`
 (a supervisor program that runs once after the gateway is healthy). The
 seeder reads the agent UUID, name, and type from `.env`:
@@ -852,6 +914,9 @@ seeder reads the agent UUID, name, and type from `.env`:
 | `A2A_GOOSE_AGENT_UUID` | `a2a-goose-agent` | goose agent record UUID |
 | `A2A_GOOSE_AGENT_NAME` | `Goose Agent` | goose agent display name |
 | `A2A_GOOSE_AGENT_TYPE` | `goose` | Agent type shorthand |
+| `A2A_PI_AGENT_UUID` | `a2a-pi-agent` | pi agent record UUID |
+| `A2A_PI_AGENT_NAME` | `pi Agent` | pi agent display name |
+| `A2A_PI_AGENT_TYPE` | `pi` | Agent type shorthand |
 
 The seeder uses the `insertUpdateA2aAgent` GraphQL mutation (upsert), so it's
 safe to run on every container start — existing records are updated, not
@@ -865,6 +930,7 @@ With several bridges bundled, requests route by `agent_uuid`:
 - `agent_uuid: a2a-hermes-agent` → `HermesAgentHandler`
 - `agent_uuid: a2a-openclaw-agent` → `OpenClawAgentHandler`
 - `agent_uuid: a2a-goose-agent` → `GooseAgentHandler`
+- `agent_uuid: a2a-pi-agent` → `PiAgentHandler`
 
 No manual GraphQL mutation is needed — all records exist after `docker compose up -d`.
 A record is seeded even when its sibling profile is off; requests to it then
@@ -1021,6 +1087,7 @@ the final reply carries it separately as `metadata.reasoning`.
 | Bridge | Source of reasoning |
 |---|---|
 | goose | `agent_thought_chunk` updates |
+| pi | `message_update` → `assistantMessageEvent.thinking_delta` (full `thinking_end` / `message_end` copies are never re-emitted) |
 | Hermes | `reasoning.delta` events (a `reasoning.available` that only repeats the answer is dropped) |
 | OpenClaw | `delta.reasoning_content` / `delta.reasoning` — OpenClaw sends none today |
 | core engine | `rs#`-tagged frames from the LLM handler (enable with the agent's model `thinking` / `reasoning` setting) |
@@ -1187,12 +1254,19 @@ pip install requests
 | [tests/goose/test_gateway_live.py](tests/goose/test_gateway_live.py) | goose | E2E suite | Same nine steps as the Hermes suite; step 01 probes goose with an ACP `initialize` on `/acp` |
 | [tests/goose/test_sse_live.py](tests/goose/test_sse_live.py) | goose | E2E suite | 7 checks: the six Hermes SSE checks plus a direct ACP streaming check against `goose serve` |
 | [tests/goose/test_chatbot.py](tests/goose/test_chatbot.py) | goose | interactive | REPL against the A2A surface with live SSE streaming |
+| [tests/pi/test_hello.py](tests/pi/test_hello.py) | pi | smoke | Non-streaming hello through the pi bridge |
+| [tests/pi/test_hello_sse.py](tests/pi/test_hello_sse.py) | pi | smoke | One-shot streamed hello |
+| [tests/pi/test_gateway_live.py](tests/pi/test_gateway_live.py) | pi | E2E suite | Same nine steps as the Hermes suite; step 01 probes the sidecar `GET /health` |
+| [tests/pi/test_sse_live.py](tests/pi/test_sse_live.py) | pi | E2E suite | 7 checks: the Hermes SSE checks plus a direct sidecar SSE prompt and a reasoning check |
+| [tests/pi/test_chatbot.py](tests/pi/test_chatbot.py) | pi | interactive | REPL against the A2A surface with live SSE streaming |
 | [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | all | library | Shared helpers — not run directly |
+
 
 ```bash
 python tests/hermes/test_hello.py
 python tests/openclaw/test_hello.py
 python tests/goose/test_hello.py
+python tests/pi/test_hello.py
 # ...and so on for whichever bridge(s) you have bundled
 ```
 
@@ -1207,6 +1281,7 @@ failure**, so they work as CI gates.
 | `--hermes-url` | hermes scripts | Override the host-reachable Hermes URL used for health checks |
 | `--openclaw-url` | openclaw scripts | Override the host-reachable OpenClaw URL used for health checks |
 | `--goose-url` | goose scripts | Override the host-reachable goose URL used for the ACP probes |
+| `--pi-url` | pi scripts | Override the host-reachable pi sidecar URL used for the `/health` probe |
 | `--token` | all | Use a pre-minted JWT instead of resolving one |
 | `--endpoint-id` | all | Default `a2a` |
 | `--part-id` | all | Default `default` |
@@ -1395,7 +1470,7 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | Bundled Hermes not starting | Ensure `COMPOSE_PROFILES` includes `hermes`, and that `www/hermes` + `www/projects` exist. |
 | Bundled OpenClaw not starting | Ensure `COMPOSE_PROFILES` includes `openclaw`, and that `www/openclaw` + `www/projects` exist. |
 | Bundled Postgres not starting | Ensure `COMPOSE_PROFILES` includes `postgres` and `PG_HOST=postgres`. |
-| Gateway can't reach `postgres` / `hermes` / `openclaw` / `goose` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` / `GOOSE_API_URL` at `host.docker.internal` or a real host. |
+| Gateway can't reach `postgres` / `hermes` / `openclaw` / `goose` / `pi` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` / `GOOSE_API_URL` / `PI_API_URL` at `host.docker.internal` or a real host. |
 | Test script can't resolve host `hermes` / `openclaw` / `goose` | Expected — pass `--hermes-url http://127.0.0.1:8642` / `--openclaw-url http://127.0.0.1:18789` / `--goose-url http://127.0.0.1:3284`, or let the helper auto-swap in the host-published port. |
 | `relation "a2a_tasks" does not exist` | Set `initialize_tables=1` and restart the gateway. |
 | Port already in use | Change `CONTAINER_PORT` (gateway), `HERMES_GATEWAY_PORT` / `HERMES_DASHBOARD_PORT` (hermes), `OPENCLAW_PORT` (openclaw), `GOOSE_PORT` (goose), or `POSTGRES_PORT` in `.env`. |

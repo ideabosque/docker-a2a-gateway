@@ -212,7 +212,8 @@ and `tests/goose/test_sse_live.py` verifies).
 │   pi/                          # pi sibling: Node sidecar (HTTP + SSE) driving
 │                                #   `pi --mode rpc` (pi has no network server)
 │       ├── src/                 #   rpc driver, session pool, HTTP server
-│       ├── test/                #   framing + pool unit tests (fake pi)
+│       ├── extensions/          #   tool-approval.js — dialogs for gated tools
+│       ├── test/                #   framing + pool + extension tests (fake pi)
 │       ├── Dockerfile           #   node:24 + pinned pi CLI (npm)
 │       ├── docker-entrypoint.sh #   first-start compat-endpoint config
 │       └── healthcheck.sh       #   GET /health with the shared secret
@@ -836,7 +837,7 @@ live in `handlers/pi_client.py`; design notes live in the plugin's
 | `PI_CWD` | `/workspace` | Working directory for new pi sessions (inside the pi container) |
 | `PI_SIDE_MODEL` | — | Default model as `provider/modelId` (e.g. `anthropic/claude-sonnet-4-5`); per-agent metadata `pi_model` overrides. Credentials are pi's own provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... — pi docs `providers.md`); a custom OpenAI-compatible endpoint is configured via `PI_COMPAT_*` below. (`PI_SIDE_*`, not pi's own `PI_MODEL`/`PI_PROVIDER` — those names are exported by pi into its tool shells, and hosts that run pi locally carry them; see the spike note under the bundled section) |
 | `PI_SIDE_THINKING` | — | Default thinking level (`off` … `max`); per-agent metadata `pi_thinking` overrides. Reasoning streams as tagged chunks (see [Reasoning](#reasoning)); `A2A_SHOW_REASONING` still applies |
-| `PI_PERMISSION_MODE` | `auto_allow` | How the bridge answers pi **extension UI dialogs** (`auto_allow`: confirm + first select option, `deny`: cancel everything, `ask`: `INPUT_REQUIRED` until approval, long-lived gateway only). pi's built-in tools never ask — the pi container is the boundary |
+| `PI_PERMISSION_MODE` | `auto_allow` | How the bridge answers pi **extension UI dialogs** (`auto_allow`: confirm + first select option, `deny`: cancel everything, `ask`: `INPUT_REQUIRED` until the user's `approval_response` — long-lived gateway). pi's built-in tools never ask by themselves — pair this with the bundled **tool-approval extension** (`PI_SIDE_APPROVE_TOOLS` below) to turn gated tool calls into dialogs |
 | `PI_BUSY_BEHAVIOR` | `followUp` | What a second message does while pi is still streaming: `followUp` (queue until the agent stops), `steer` (deliver before the next LLM call), or `reject` |
 | `PI_STREAM_TIMEOUT` / `PI_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; how long `ask` waits before cancelling a dialog |
 
@@ -852,6 +853,8 @@ live in `handlers/pi_client.py`; design notes live in the plugin's
 | `PI_SIDE_PROVIDER` / `PI_SIDE_MODEL_ID` | — | Explicit provider/model override (falls back to `PI_SIDE_MODEL`'s `provider/` prefix) |
 | `PI_SIDE_TOOLS` | — | Comma list for `pi --tools` (default: pi's own selection — `read`, `bash`, `edit`, `write`) |
 | `PI_SIDE_EXTRA_ARGS` | — | Extra pi CLI flags per session, e.g. `--no-extensions --offline` |
+| `PI_SIDE_APPROVE_TOOLS` | empty (passive) | The bundled **tool-approval extension** intercepts listed tools before pi runs them and opens a dialog answered by the bridge's `pi_permission_mode` — with `pi_permission_mode=ask` the task goes `INPUT_REQUIRED` until the user answers over SSE (`message/send` with `metadata.operation="approval_response"`, see `tests/pi/test_approval_live.py`). Tool names (`bash,edit,write`) or `*` for everything. A gated call with no UI fails closed |
+| `PI_SIDE_APPROVE_TIMEOUT_MS` | unset | Optional fail-closed dialog timeout: pi auto-resolves an unanswered dialog with "no" after this long |
 | `PI_SIDE_APPROVE` | `0` | `0` runs `--no-approve` (headless: ignore trust-gated project-local files); `1` keeps pi's project-trust gating |
 | `PI_SIDE_OFFLINE` / `PI_SIDE_NO_EXTENSIONS` | `0` | Run `pi --offline` / `--no-extensions` for every session |
 

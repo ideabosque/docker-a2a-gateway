@@ -53,6 +53,20 @@ format is identical; the driver:
 - **Client disconnects keep runs going** — cancellation is explicit
   (`POST …/abort`); the gateway's `tasks/cancel` maps to it.
 
+## Tool approval (bundled extension)
+
+`extensions/tool-approval.js` is installed into `<agent-dir>/extensions` by
+the container entrypoint (no clobber — an operator file wins). pi's built-in
+tools run WITHOUT prompts; this extension intercepts the tools listed in
+`PI_SIDE_APPROVE_TOOLS` (e.g. `bash,edit,write`, or `*`) and opens a
+`ctx.ui.confirm` dialog — in RPC mode a **blocking** `extension_ui_request` —
+which the A2A bridge answers per the agent's `pi_permission_mode`
+(`auto_allow` confirms, `deny` cancels, `ask` parks the task
+`INPUT_REQUIRED` until the user's `approval_response` arrives). The optional
+`PI_SIDE_APPROVE_TIMEOUT_MS` fail-closes an unanswered dialog. Unit tests:
+`test/tool-approval.test.ts`; live E2E: `tests/pi/test_approval_live.py` in
+docker-a2a-gateway.
+
 ## Testing
 
 `npm test` (vitest) drives the framing/pool lifecycle against

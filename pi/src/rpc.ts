@@ -295,7 +295,22 @@ export class PiRpc {
 			// event listeners so nothing gets lost.
 		}
 		if (data["type"] === "extension_ui_request") {
+			// DUAL DELIVERY (verified live, P1 spike): pi delivers extension
+			// UI records as a separate RPC subprotocol — rpc-mode does NOT
+			// emit them as AgentSessionEvents. Dialogs must BOTH reach the
+			// dedicated onUiRequest host (optional policy) AND the event
+			// listeners, which is how the sidecar's SSE run window forwards
+			// them to the A2A bridge for approval handling.
 			this.opts.onUiRequest?.(data as unknown as UiRequest);
+			for (const listener of [...this.eventListeners]) {
+				try {
+					listener(data);
+				} catch (err) {
+					// A listener must never stall the stdout pump.
+					this.opts.onStderr?.(`[listener error] ${err}
+`);
+				}
+			}
 			return;
 		}
 		// Session event: constructor listener first, then run-window listeners.

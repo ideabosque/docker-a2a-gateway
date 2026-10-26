@@ -62,6 +62,11 @@ COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 COPY test ./test
 
+# Bundled pi extensions (tool-approval.js) — installed at RUNTIME into the
+# agent dir by the entrypoint (see below): /root/.pi/agent is a volume, and a
+# build-time copy would be shadowed by it.
+COPY extensions /opt/pi-extensions
+
 # Build the sidecar. devDependencies (typescript, vitest) are installed only
 # for the build and pruned afterwards — the runtime server is stdlib-only.
 # npm ci deterministically installs from the committed package-lock.json.

@@ -454,6 +454,14 @@ services:
       - PI_SIDE_THINKING=${PI_SIDE_THINKING:-}
       - PI_SIDE_TOOLS=${PI_SIDE_TOOLS:-}
       - PI_SIDE_EXTRA_ARGS=${PI_SIDE_EXTRA_ARGS:-}
+      # Tool-approval extension (pi/extensions/tool-approval.js): comma list of
+      # tools whose calls open a ctx.ui dialog ("*" = every tool; empty =
+      # passive). The dialog is answered by the A2A bridge per the agent's
+      # pi_permission_mode (auto_allow confirms / deny cancels / ask →
+      # INPUT_REQUIRED until the user's approval_response). The optional
+      # timeout fail-closes the dialog (agent-side auto-resolve = "no").
+      - PI_SIDE_APPROVE_TOOLS=${PI_SIDE_APPROVE_TOOLS:-}
+      - PI_SIDE_APPROVE_TIMEOUT_MS=${PI_SIDE_APPROVE_TIMEOUT_MS:-}
       # 1 keeps pi's project-trust gating (asks on the TUI only); 0 (default)
       # runs --no-approve, right for a headless container.
       - PI_SIDE_APPROVE=${PI_SIDE_APPROVE:-0}

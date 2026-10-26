@@ -29,7 +29,25 @@ set -e
 
 AGENT_DIR="${PI_AGENT_DIR:-/root/.pi/agent}"
 MODELS_JSON="$AGENT_DIR/models.json"
-mkdir -p "$AGENT_DIR" /data/sessions /workspace
+BUNDLED_EXTENSIONS_SRC="/opt/pi-extensions"
+BUNDLED_EXTENSIONS_DIR="$AGENT_DIR/extensions"
+mkdir -p "$AGENT_DIR" /data/sessions /workspace "$BUNDLED_EXTENSIONS_DIR"
+
+# ── Bundled pi extensions (no-clobber: an operator file wins) ────────────────
+# (tool-approval.js — gated tool calls open per-call dialogs, answered by the
+#  A2A bridge per pi_permission_mode; see extensions/tool-approval.js.)
+if [ -d "$BUNDLED_EXTENSIONS_SRC" ]; then
+    for ext in "$BUNDLED_EXTENSIONS_SRC"/*.js; do
+        [ -e "$ext" ] || continue
+        target="$BUNDLED_EXTENSIONS_DIR/$(basename "$ext")"
+        if [ -e "$target" ]; then
+            echo "=== pi sidecar: $target already exists — keeping operator copy"
+        else
+            cp "$ext" "$target"
+            echo "=== pi sidecar: installed $(basename "$ext")"
+        fi
+    done
+fi
 
 # ── Optional first-start compatible-endpoint config ──────────────────────────
 # (models.json — pi docs models.md; skipped when the operator provided their

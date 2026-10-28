@@ -426,10 +426,10 @@ the `openclaw-data` named volume (`OPENCLAW_FOLDER`) → `/root/.openclaw` is
 all OpenClaw config/agents/sessions (a named volume because OpenClaw's config
 writes fail on Docker Desktop bind mounts — on Linux you may set it to a host
 folder such as `./www/openclaw`); `www/projects` (`PROJECTS_FOLDER`) is a shared
-workspace Hermes and OpenClaw both mount; `www/goose-workspace`
-(`GOOSE_WORKSPACE_FOLDER`) → `/workspace` is the only host folder the goose
-agent can touch (its config and sessions live in the `goose-data` /
-`goose-share` named volumes).
+workspace mounted by Hermes, OpenClaw, Goose and Pi. Goose and Pi access it
+at `/workspace/projects`, alongside their default `/workspace` folders
+(`GOOSE_WORKSPACE_FOLDER` and `PI_WORKSPACE_FOLDER`). Goose config and
+sessions live in the `goose-data` / `goose-share` named volumes.
 
 ### Step 3 — Build
 
@@ -610,7 +610,7 @@ host-side conflict without touching the app config.
 | `openclaw-data` volume (`OPENCLAW_FOLDER`) | `/root/.openclaw` | openclaw | All OpenClaw config/agents/sessions (named volume; bind mounts break OpenClaw on Docker Desktop) |
 | `./www` | `/var/www` | openclaw | Full www mirror (logs, projects, openclaw) |
 | `./.ssh` (`SSH_HOST_DIR`) | `/root/.ssh-src` (ro) | openclaw | Same deploy key as the main gateway build — entrypoint copies it into a proper `~/.ssh` at container start |
-| `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) | hermes, openclaw | Shared workspace |
+| `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) / `/workspace/projects` (goose, pi) | hermes, openclaw, goose, pi | Shared workspace |
 | `/var/run/docker.sock` (`DOCKER_SOCK`) | `/var/run/docker.sock` | hermes | Host Docker access — see [Security notes](#-security-notes) |
 | `./www/goose-workspace` (`GOOSE_WORKSPACE_FOLDER`) | `/workspace` | goose | The goose agent's working directory (`GOOSE_CWD`) |
 | `goose-data` volume (`GOOSE_DATA_FOLDER`) | `/root/.config/goose` | goose | goose `config.yaml` + `server-secret.txt` |
@@ -873,13 +873,13 @@ re-opened sessions boot with their own model. Provider credentials
 (`ANTHROPIC_API_KEY`, ...) and `PI_COMPAT_*` (models.json interpolation)
 still pass through.
 | `PI_DATA_FOLDER` / `PI_AGENT_DIR_FOLDER` | `pi-data` / `pi-agent` | Volumes for sidecar state (secret, session files, resume index) / pi user config (`settings.json`, `models.json`) |
-| `PI_WORKSPACE_FOLDER` | `./www/pi-workspace` | Host folder mounted at `/workspace` — **kept separate from `www/projects`**: the gateway imports nothing from the pi workspace |
+| `PI_WORKSPACE_FOLDER` | `./www/pi-workspace` | Host folder mounted at `/workspace`; shared projects are mounted separately at `/workspace/projects` using `PROJECTS_FOLDER` |
 
 ### Shared
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into Hermes and OpenClaw when bundled |
+| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into Hermes, OpenClaw, Goose and Pi when bundled |
 | `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | — | Ollama Cloud, shared between Hermes (`OLLAMA_BASE_URL`), OpenClaw and goose (`OLLAMA_HOST`) |
 | `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`), OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`) and goose (`GOOSE_MODEL_PROVIDER=openai_compat`) |
 

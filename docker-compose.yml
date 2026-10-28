@@ -402,7 +402,7 @@ services:
   # bridges A2A tasks to it at http://pi:3300 while this profile is active
   # (PI_API_URL). pi's built-in tools run WITHOUT approval prompts — the pi
   # process uses the container's own OS permissions, so this container is the
-  # security boundary (workspace mount only; keep it scoped).
+  # security boundary (workspace and shared projects mounts; keep them scoped).
   pi:
     build:
       context: ./pi
@@ -420,9 +420,9 @@ services:
     volumes:
       # The pi agent's default working directory (PI_CWD=/workspace). pi tools
       # run with the container's privileges; do not add broader host mounts.
-      # Deliberately SEPARATE from www/projects — the gateway imports nothing
-      # from the pi workspace.
       - ${PI_WORKSPACE_FOLDER:-./www/pi-workspace}:/workspace
+      # Shared projects folder (same PROJECTS_FOLDER as goose/hermes/openclaw).
+      - ${PROJECTS_FOLDER:-./www/projects}:/workspace/projects
       # Sidecar state: server-secret.txt, pi session files
       # (--session-dir /data/sessions) and sessions-index.json so sessions
       # survive sidecar restarts and can be re-opened transparently.

@@ -1548,3 +1548,43 @@ These mounts preserve local source fixes across image rebuilds; changes made onl
 inside a running container do not survive recreation. The local checkouts must
 contain the required fixes. Omit the framework paths from `PYTHONPATH` to use the
 framework packages installed in the image.
+
+### BanyanOS bridge testing
+
+Run `docker-banyanos-gateway` separately. Set `BANYANOS_GRAPHQL_URL` and
+`BANYANOS_WS_URL` to addresses reachable **from the A2A container**, such as
+`http://host.docker.internal:18000` and `ws://host.docker.internal:18000` on
+Docker Desktop. Set `BANYANOS_TOKEN`, `BANYANOS_ENDPOINT_ID`, and the published
+`BANYANOS_AGENT_ID` in the existing runtime configuration, then seed the A2A
+agent with `scripts/seed_agents.py`. The plugin requires its own backend token;
+test-script login credentials do not configure the plugin's credential.
+
+Host probes use `BANYANOS_GATEWAY_URL` (for example `http://127.0.0.1:18000`).
+The host probe remaps `host.docker.internal` in `BANYANOS_WS_URL` to loopback;
+the plugin keeps using the Docker address. TLS certificates must be trusted.
+
+Set `BANYANOS_SHOW_REASONING=true` in `.env` to request BanyanOS reasoning and
+stream it as tagged chunks, separate from the answer. Set it to `false` to
+disable it. The model/provider must emit reasoning for any to appear. When the
+flag is unset, `A2A_SHOW_REASONING` supplies the default. Agent metadata
+`show_reasoning` and request metadata `show_reasoning` can override the default,
+with the request taking precedence. Recreate the gateway after changing `.env`:
+`docker compose up -d --no-deps --no-build a2a-gateway`.
+
+The streaming scripts respect the server default and accept `--show-reasoning`
+or `--no-show-reasoning`; the chatbot also supports `--hide-reasoning`.
+
+```powershell
+python scripts/run_banyanos_tests.py
+python scripts/run_banyanos_tests.py --live
+```
+
+The runner expects the sibling `../silvaengine/a2a_protocol_plugin` and
+`../silvaengine/silvaengine_daemon` checkouts, or accepts `--plugin-dir` and
+`--daemon-dir`. Install their development dependencies, including pytest,
+before running. `--live` creates local task/session/message records and uses
+the configured model provider. It runs all five scripts in `tests/banyanos/`,
+including two scripted chatbot turns, after offline regressions; each process
+must exit successfully. Evidence is saved in
+`docs/test_results/banyanos_test_evidence.json`. See
+[the approved local scenario plan](docs/BANYANOS_TEST_SOP.md) for scope.

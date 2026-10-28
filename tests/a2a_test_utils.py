@@ -30,6 +30,7 @@ import hmac
 import json
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -160,6 +161,26 @@ def _host_pi_url(env: Dict[str, str]) -> str:
     return _host_service_url(env, "PI_API_URL", "PI_PORT", "3300")
 
 
+def _host_banyan_gateway_url(env: Dict[str, str]) -> str:
+    """HOST-reachable URL of docker-banyanos-gateway.
+
+    Banyanos is a separate compose stack (not a bundled sibling of THIS
+gateway), so BANYANOS_GATEWAY_URL is normally already host-reachable
+(e.g. http://127.0.0.1:8000 or a public URL). Only fall back when an
+in-container service name was configured: swap to the host-published
+BANYANOS_GATEWAY_PORT.
+    """
+    url = env.get("BANYANOS_GATEWAY_URL", "").strip()
+    if url and "://" in url:
+        from urllib.parse import urlparse
+
+        host = urlparse(url).hostname
+        if host and host not in ("localhost", "127.0.0.1") and "." not in host:
+            port = env.get("BANYANOS_GATEWAY_PORT") or urlparse(url).port or "8000"
+            return f"http://127.0.0.1:{port}"
+    return url or f"http://127.0.0.1:{env.get('BANYANOS_GATEWAY_PORT', '8000')}"
+
+
 def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     """Build a config dict from .env + explicit overrides.
 
@@ -186,6 +207,9 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     openclaw_url = (overrides.get("openclaw_url") or _host_openclaw_url(env)).rstrip("/")
     goose_url = (overrides.get("goose_url") or _host_goose_url(env)).rstrip("/")
     pi_url = (overrides.get("pi_url") or _host_pi_url(env)).rstrip("/")
+    banyanos_gateway_url = (
+        overrides.get("banyanos_gateway_url") or _host_banyan_gateway_url(env)
+    ).rstrip("/")
     endpoint_id = overrides.get("endpoint_id") or env.get("endpoint_id", "a2a")
     part_id = overrides.get("part_id") or env.get("part_id", "default")
     bridge = overrides.get("bridge")
@@ -197,10 +221,31 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         default_agent = env.get("A2A_GOOSE_AGENT_UUID", "a2a-goose-agent")
     elif bridge == "pi":
         default_agent = env.get("A2A_PI_AGENT_UUID", "a2a-pi-agent")
+    elif bridge == "banyanos":
+        default_agent = (env.get("A2A_BANYANOS_AGENT_UUID")
+                         or "a2a-banyanos-agent")
     else:
         default_agent = env.get("A2A_DEFAULT_AGENT_UUID", "a2a-hermes-agent")
     agent_uuid = overrides.get("agent_uuid") or default_agent
     token = resolve_token(env, overrides.get("token"))
+    banyanos_endpoint_id = (
+        overrides.get("banyanos_endpoint_id")
+        or env.get("BANYANOS_ENDPOINT_ID")
+        or "banyan"
+    )
+    banyanos_token = overrides.get("banyanos_token") or env.get("BANYANOS_TOKEN", "")
+    banyanos_ws_url = (overrides.get("banyanos_ws_url")
+                      or env.get("BANYANOS_WS_URL", "")).rstrip("/")
+    # The plugin runs in Docker; these probes run on the host. Docker's
+    # host alias is not available in every host DNS configuration.
+    if banyanos_ws_url and not overrides.get("banyanos_ws_url"):
+        from urllib.parse import urlsplit, urlunsplit
+        parsed = urlsplit(banyanos_ws_url)
+        if parsed.hostname == "host.docker.internal":
+            netloc = "127.0.0.1"
+            if parsed.port:
+                netloc += f":{parsed.port}"
+            banyanos_ws_url = urlunsplit(parsed._replace(netloc=netloc))
     return {
         "gateway_url": gateway_url,
         "hermes_url": hermes_url,
@@ -211,6 +256,13 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         "goose_key": env.get("GOOSE_SECRET_KEY", ""),
         "pi_url": pi_url,
         "pi_key": env.get("PI_SECRET_KEY", ""),
+        "banyanos_gateway_url": banyanos_gateway_url,
+        "banyanos_ws_url": banyanos_ws_url,
+        "banyanos_endpoint_id": banyanos_endpoint_id,
+        "banyanos_token": banyanos_token,
+        "banyanos_agent_id": env.get("BANYANOS_AGENT_ID", ""),
+        "banyanos_email": env.get("BANYANOS_EMAIL", ""),
+        "banyanos_password": env.get("BANYANOS_PASSWORD", ""),
         "endpoint_id": endpoint_id,
         "part_id": part_id,
         "agent_uuid": agent_uuid,
@@ -321,6 +373,322 @@ def pi_sidecar_ok(pi_url: str, pi_key: str = "",
         return r.json().get("status") == "ok"
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Banyanos (docker-banyanos-gateway) direct probes
+# ---------------------------------------------------------------------------
+def banyanos_gateway_ok(banyanos_url: str, timeout: int = 10) -> bool:
+    """GET /health on the Banyanos gateway (SilvaEngine gateway image)."""
+    try:
+        r = requests.get(f"{banyanos_url.rstrip('/')}/health", timeout=timeout)
+        print(f"  banyan gateway /health -> HTTP {r.status_code}  ({banyanos_url})")
+        return r.status_code == 200
+    except Exception as e:
+        print(f"  {R}FAIL{RST} banyan gateway /health error: {e}  ({banyanos_url})")
+        return False
+
+
+def banyanos_graphql_ok(banyanos_url: str, banyanos_endpoint_id: str,
+                      banyanos_token: str, part_id: str = "",
+                      timeout: int = 30) -> bool:
+    """Prove the Banyanos GraphQL route answers with a valid (authed) response.
+
+    Introspection checks the deployed schema without creating a task.
+    HTTP 200 alone is insufficient: GraphQL auth and validation errors also
+    use that status code.
+    """
+    url = f"{banyanos_url.rstrip('/')}/{banyanos_endpoint_id}/agent_engine_graphql"
+    headers = {
+        "Authorization": f"Bearer {banyanos_token}",
+        "Content-Type": "application/json",
+    }
+    if part_id:
+        headers["Part-Id"] = part_id
+    try:
+        r = requests.post(url, json={
+            "query": (
+                "query Probe { __typename }"
+            ),
+        }, headers=headers, timeout=timeout)
+        print(f"  banyan GraphQL probe -> HTTP {r.status_code}  ({url})")
+        body = r.json() if r.status_code == 200 else None
+        if (isinstance(body, dict) and not body.get("errors")
+                and isinstance(body.get("data"), dict)
+                and body["data"].get("__typename")):
+            return True
+        print("    GraphQL probe failed (HTTP, errors, or missing data)")
+        return False
+    except Exception as e:
+        print(f"  {R}FAIL{RST} banyan GraphQL probe error: {e}")
+        return False
+
+
+def banyanos_login(banyanos_url: str, banyanos_endpoint_id: str, email: str,
+                 password: str, part_id: str = "", timeout: int = 30) -> str:
+    """Banyanos JWT via user_engine's Login mutation (empty string on failure).
+
+    The backend route is the user_engine_graphql endpoint; auth_token is the
+    Bearer credential perm_engine checks for the agent_engine routes.
+    """
+    url = f"{banyanos_url.rstrip('/')}/{banyanos_endpoint_id}/user_engine_graphql"
+    headers = {"Content-Type": "application/json"}
+    if part_id:
+        headers["Part-Id"] = part_id
+    try:
+        r = requests.post(url, json={
+            "query": (
+                "mutation Login($input: LoginInput!, $idempotencyKey: ID!) { "
+                "login(input: $input, idempotencyKey: $idempotencyKey) { "
+                "authToken requiresMfa } }"
+            ),
+            "variables": {
+                "input": {"email": email, "password": password},
+                "idempotencyKey": f"banyanos-login-{uuid.uuid4().hex[:12]}",
+            },
+        }, headers=headers, timeout=timeout)
+        data = (r.json() or {}).get("data") or {}
+        result = data.get("login") or {}
+        if result.get("requiresMfa"):
+            print("  ! Banyanos login reports MFA required - set BANYANOS_TOKEN manually")
+            return ""
+        token = result.get("authToken") or result.get("auth_token") or ""
+        if token:
+            print(f"  banyan login OK ({email})")
+        else:
+            print(f"  ! banyan login failed: HTTP {r.status_code}")
+        return token
+    except Exception as e:
+        print(f"  ! banyan login error: {e}")
+        return ""
+
+
+def banyanos_ws_ok(banyanos_ws_url: str, banyanos_endpoint_id: str,
+                 banyanos_token: str, part_id: str = "", timeout: float = 15.0
+                 ) -> bool:
+    """banyan_ws handshake probe - raw RFC 6455, no extra dependency.
+
+    Opens ``/{endpoint_id}/banyan_ws?token=...&part_id=...`` and waits for
+    the gateway welcome frame {"type":"connection_ack","connection_id":...}.
+    Closes immediately after; no subscription is triggered.
+    """
+    conn = BanyanosRawWebSocket(banyanos_ws_url, banyanos_endpoint_id,
+                              banyanos_token, part_id, timeout=timeout)
+    try:
+        ack = conn.connect()
+        if not ack:
+            return False
+        print(f"  banyan_ws connection_ack OK (id={ack[:12]}...)")
+        return True
+    except _BanyanosWSHandshakeRejected as exc:
+        print(f"  ! banyan_ws handshake rejected: {exc.frame!r}")
+        return False
+    except Exception as e:
+        print(f"  {R}FAIL{RST} banyan_ws probe error: {e}")
+        return False
+    finally:
+        if conn.sock is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
+# Banyanos raw WebSocket (RFC 6455) client - no extra dependency
+# ---------------------------------------------------------------------------
+class _BanyanosWSHandshakeRejected(Exception):
+    def __init__(self, frame):
+        self.frame = frame
+        super().__init__(str(frame))
+
+
+class BanyanosRawWebSocket:
+    """Minimal stdlib WebSocket client for the banyan_ws channel.
+
+    Implements just enough of RFC 6455 for the gateway push surface:
+    client->server messages are masked text frames; server frames are read
+    unmasked. Frames are not fragmented clientside. Used by the banyan
+    live tests to (a) verify the handshake and (b) consume
+    ``agentInvokeStream`` subscription events natively.
+    """
+
+    def __init__(self, banyanos_ws_url: str, banyanos_endpoint_id: str,
+                 banyanos_token: str, part_id: str = "",
+                 timeout: float = 15.0) -> None:
+        self.timeout = float(timeout)
+        self.sock = None
+        self._buf = b""
+        self.path = None
+        self.host = None
+        self.port = None
+        self.secure = False
+
+        from urllib.parse import parse_qsl, urlencode, urlparse
+
+        parsed = urlparse(banyanos_ws_url.rstrip("/"))
+        if parsed.scheme not in ("ws", "wss"):
+            url = (
+                f"{banyanos_ws_url.rstrip('/')}/{banyanos_endpoint_id}/banyan_ws"
+            )
+            url = url.replace("http://", "ws://").replace("https://", "wss://")
+            parsed = urlparse(url)
+        self.secure = parsed.scheme == "wss"
+        self.host = parsed.hostname
+        self.port = parsed.port or (443 if self.secure else 80)
+        path = (parsed.path or "")
+        if not path.endswith("banyan_ws"):
+            path += f"/{banyanos_endpoint_id}/banyan_ws"
+        query = [(k, v) for k, v in parse_qsl(parsed.query)
+                 if k not in ("token", "part_id")]
+        if banyanos_token:
+            query.append(("token", banyanos_token))
+        if part_id:
+            query.append(("part_id", part_id))
+        if query:
+            path += "?" + urlencode(query)
+        self.path = path
+
+    def connect(self) -> str:
+        """Upgrade the connection; return the gateway connection_id."""
+        import base64
+        import socket as _socket
+        import ssl as _ssl
+
+        sock = _socket.create_connection((self.host, self.port),
+                                         timeout=self.timeout)
+        if self.secure:
+            ctx = _ssl.create_default_context()
+            sock = ctx.wrap_socket(sock, server_hostname=self.host)
+        self.sock = sock
+        key = base64.b64encode(uuid.uuid4().bytes).decode()
+        crlf = "\r\n"
+        req = crlf.join([
+            f"GET {self.path} HTTP/1.1",
+            f"Host: {self.host}:{self.port}",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+            "",
+            "",
+        ])
+        sock.sendall(req.encode())
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        first_line = head.split(b"\r\n", 1)[0]
+        if b" 101" not in first_line:
+            frame = first_line.decode("utf-8", "replace")
+            try:
+                sock.close()
+            except Exception:
+                pass
+            self.sock = None
+            raise _BanyanosWSHandshakeRejected(frame)
+        headers = dict(
+            line.decode("latin-1").split(":", 1)
+            for line in head.split(b"\r\n")[1:] if b":" in line
+        )
+        headers = {k.lower(): v.strip() for k, v in headers.items()}
+        expected_accept = base64.b64encode(hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+        ).digest()).decode()
+        if (headers.get("sec-websocket-accept") != expected_accept
+                or headers.get("upgrade", "").lower() != "websocket"):
+            self.close()
+            raise _BanyanosWSHandshakeRejected("invalid WebSocket upgrade headers")
+        self._buf = rest
+        # Welcome frame: {"type": "connection_ack", "connection_id": ...}
+        frame = self.recv_json(self.timeout)
+        if not isinstance(frame, dict) or frame.get("type") != "connection_ack":
+            try:
+                sock.close()
+            except Exception:
+                pass
+            self.sock = None
+            raise _BanyanosWSHandshakeRejected(str(frame)[:200])
+        self.connection_id = str(frame.get("connection_id") or "")
+        return self.connection_id
+
+    def recv_json(self, timeout: float = 15.0) -> Any:
+        """Receive the next complete text frame as parsed JSON."""
+        import struct
+
+        self.sock.settimeout(timeout)
+        deadline = time.monotonic() + timeout
+        while True:
+            payload = self._buf
+            if len(payload) >= 2:
+                opcode = payload[0] & 0x0F
+                ln = payload[1] & 0x7F
+                offset = 2
+                if ln == 126:
+                    if len(payload) < 4:
+                        ln = None
+                    else:
+                        ln = struct.unpack(">H", payload[2:4])[0]
+                        offset = 4
+                elif ln == 127:
+                    if len(payload) < 10:
+                        ln = None
+                    else:
+                        ln = struct.unpack(">Q", payload[2:10])[0]
+                        offset = 10
+                if ln is not None and len(payload) >= offset + ln:
+                    self._buf = payload[offset + ln:]
+                    if opcode == 8:
+                        return None  # close frame
+                    if opcode == 9:
+                        self._send_frame(payload[offset:offset + ln], opcode=10)
+                        continue
+                    if opcode != 1:
+                        continue  # ping/pong/pong-style control frames
+                    text = payload[offset:offset + ln].decode("utf-8", "replace")
+                    return json.loads(text)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self.sock.settimeout(remaining)
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                return None
+            self._buf += chunk
+
+    def send_text(self, text: str) -> None:
+        """Send one masked text frame."""
+        self._send_frame(text.encode("utf-8"))
+
+    def _send_frame(self, data: bytes, opcode: int = 1) -> None:
+        import os
+        import struct
+
+        mask = os.urandom(4)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        header = bytearray([0x80 | opcode])
+        n = len(data)
+        if n < 126:
+            header.append(0x80 | n)
+        elif n < (1 << 16):
+            header.append(0x80 | 126)
+            header += struct.pack(">H", n)
+        else:
+            header.append(0x80 | 127)
+            header += struct.pack(">Q", n)
+        self.sock.sendall(bytes(header) + mask + masked)
+
+    def close(self) -> None:
+        if self.sock is None:
+            return
+        try:
+            self.sock.close()
+        except Exception:
+            pass
+        self.sock = None
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +874,8 @@ __all__ = [
     "PROJECT_DIR", "ENV_FILE",
     "load_env", "mint_jwt", "resolve_token", "resolve_config",
     "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
-    "pi_sidecar_ok",
+    "pi_sidecar_ok", "banyanos_gateway_ok", "banyanos_graphql_ok",
+    "banyanos_login", "banyanos_ws_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
     "is_reasoning_artifact", "StreamSections",

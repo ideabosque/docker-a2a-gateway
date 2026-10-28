@@ -76,6 +76,24 @@ AGENTS = [
             "agent_type": os.environ.get("A2A_PI_AGENT_TYPE", "pi"),
         },
     },
+    {
+        # Banyanos bridge. docker-banyanos-gateway is an EXTERNAL stack (its own
+        # compose project — not a bundled sibling of this one). The handler
+        # resolves connection details from trusted config only:
+        # BANYANOS_GRAPHQL_URL / BANYANOS_WS_URL / BANYANOS_TOKEN / BANYANOS_AGENT_ID
+        # (forwarded to the plugin's Config) and/or per-agent metadata.
+        # agent_type shorthand "banyanos_agent" (AGENT_TYPE_MAP in the plugin).
+        "agentId": os.environ.get("A2A_BANYANOS_AGENT_UUID", "a2a-banyanos-agent"),
+        "agentName": os.environ.get("A2A_BANYANOS_AGENT_NAME", "Banyanos Agent"),
+        "metadata": {
+            "agent_type": os.environ.get("A2A_BANYANOS_AGENT_TYPE", "banyanos_agent"),
+            **(
+                {"banyanos_agent_id": _banyanos_agent_id}
+                if (_banyanos_agent_id := os.environ.get("BANYANOS_AGENT_ID", "").strip())
+                else {}
+            ),
+        },
+    },
     # Unattended Goose for scheduled runs (a2a_scheduler): nobody is there to
     # answer permission requests, so it has its own policy instead of the chat
     # agent's GOOSE_PERMISSION_MODE=ask. What a run may change is still decided

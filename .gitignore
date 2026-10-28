@@ -29,3 +29,5 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
+# Generated test reports and execution evidence.
+/docs/test_results/

@@ -944,6 +944,22 @@ resolution works via `AGENT_TYPE_MAP` without explicit module/class fields.
 `A2A_AI_AGENT_TYPE` / `A2A_DEFAULT_AGENT_UUID` remain as the env-var
 fallback for `a2a_protocol_plugin`'s Config (used when no DB record matches).
 
+### Project-specific agent registrations
+
+Project agent systems own their registration seed/configuration. This gateway
+seeds shared bridge records only and exposes `insertUpdateA2aAgent` for project
+setup. Runtime handlers continue to accept per-agent metadata such as
+`goose_cwd` and `goose_permission_mode`.
+
+IO Operations Growth setup lives in
+`io_operations_growth_agent_system/scripts/seed_a2a_agent.py` (preview by default,
+`--apply` to upsert), with its `IOG_A2A_*` settings and operator procedure in
+that repository's `.env.example` and `docs/A2A_REGISTRATION.md`. Its stable ID
+remains `a2a-goose-iog-agent`; removal from this gateway's seed does not delete
+an existing database registration. Run the project-owned setup when provisioning
+a new environment. Move any local `A2A_GOOSE_IOG_*` overrides to the Agent System
+configuration. Generic bridge registration and handler resolution stay here.
+
 With several bridges bundled, requests route by `agent_uuid`:
 
 - `agent_uuid: a2a-hermes-agent` → `HermesAgentHandler`

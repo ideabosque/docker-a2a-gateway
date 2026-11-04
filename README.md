@@ -1604,3 +1604,12 @@ including two scripted chatbot turns, after offline regressions; each process
 must exit successfully. Evidence is saved in
 `docs/test_results/banyanos_test_evidence.json`. See
 [the approved local scenario plan](docs/BANYANOS_TEST_SOP.md) for scope.
+
+
+### Shared users and project-owned Docker environments
+
+`LOCAL_USER_FILE=/app/data/users.json` is the generic shared local-user file. It may contain accounts for several installed projects; project names do not belong in the authentication filename. Preserve its contents when changing the path, and never commit user files or backups.
+
+Keep project-specific settings out of the shared gateway `.env`. Each installed project may supply its own Compose overlay and private runtime environment files, separating engine settings from agent credentials. A site-owned `compose.projects.local.yaml` can include this repository's base Compose file plus the chosen project overlays; select it with `COMPOSE_FILE=compose.projects.local.yaml` in the local gateway `.env`. The local manifest is Git-ignored and contains paths rather than credentials. All project setup commands must use the same complete deployment manifest when they manage a shared stack.
+
+The current Supplier Rating and Growth deployment follows this pattern. Their private `deployment/gateway.env` and `deployment/goose.env` files live in their respective Agent System projects. Shared authentication, infrastructure settings and optional source mount controls remain here. Source overlays remain optional; the generic `.env.example` leaves `PYTHONPATH` empty, while a configured local deployment may retain its required package paths.

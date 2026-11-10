@@ -61,6 +61,7 @@ source is what the live stack exercised.
 | F3 | **`configuration.returnImmediately` is a no-op.** The request blocked 13.00 s and returned a direct Message (`ROLE_AGENT`, `parts`, `contextId`) — no Task, no task id. The flag only applies when the reply is a Task; the plugin always takes the legacy direct-Message profile. | live probe | **open** — Phase 2 item 4 |
 | F4 | **SSE frames carried no `id:` field**, so a browser `EventSource` could not resume automatically; the cursor existed only inside the JSON payload. | live probe | **fixed** in this branch |
 | F5 | **Replay was partition-scoped, not recipient-scoped.** The shared daemon's history entries without a `partition_key` are returned to *every* partition (`silvaengine_daemon/sse.py`: `msg.get("partition_key") in (None, partition_key)`). The A2A plugin's SSE path does pass the partition (`a2a_protocol_plugin/main.py:551` → `send_to_user(..., partition_key=partition_key)`), so the window is narrow — but the daemon's `send_to_client` / `broadcast_message` paths, and any call with an empty partition, still append partition-less entries that any partition can replay. | source + live probe | **mitigated** in the gateway (partition-scoped replay); **recipient-level** isolation remains **open** — it belongs to `silvaengine_daemon` |
+| F6 | **An unknown agent answered with a successful Message** whose text said "AI agent error: Agent not found: …" - a caller decoding the A2A lifecycle saw a false success. The structurally-failed Task shape existed for the `message_response` path but not for the two `task_execution` paths. | live scenario | **fixed** in this branch: every bridge failure on the task-execution paths now emits a FAILED Task |
 
 ### Verified-working behaviour (no regression)
 
@@ -70,6 +71,7 @@ source is what the live stack exercised.
 | Work continues after the client disconnects | submitted over a raw socket, closed after 3 s → the run completed; `tasks/get` recovered `TASK_STATE_COMPLETED` and the output |
 | Durable output + `tasks/get` recovery | the persisted task carries the final message parts |
 | Approval (HITL) interruption | `task_permission` (`Allow tool: bash / Command: echo approval-probe`) + `INPUT_REQUIRED` → `approval_response` → `Approval granted for task …` → the run continued to completion |
+| Long-running task suite (live, per bridge) | omp / goose / pi -> **8 passed, 0 failed, 0 unmet** each: health, agent-card policy, submission, terminal observation via `tasks/get`, a stable second observation, disconnect/reconnect with recovery, the unknown-agent typed error, and a confirmed cancellation |
 | Existing bridge suites | omp **10/10**, goose **10/10**, pi **10/10** (`tests/<bridge>/test_gateway_live.py`) |
 
 ## 5. Scenario coverage

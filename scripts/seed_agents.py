@@ -1,6 +1,6 @@
 #!/opt/venv/bin/python
-"""Seed default a2a_agents records for the Hermes, OpenClaw, Goose and pi
-bridges.
+"""Seed default a2a_agents records for the Hermes, OpenClaw, Goose, pi and
+omp bridges.
 
 Runs after the gateway is healthy. Idempotent — uses insertUpdateA2aAgent
 (upsert), so it's safe to run on every container start.
@@ -10,8 +10,9 @@ Registers:
   - a2a-openclaw-agent → agent_type: "openclaw"
   - a2a-goose-agent   → agent_type: "goose"
   - a2a-pi-agent      → agent_type: "pi"
+  - a2a-omp-agent     → agent_type: "omp"
 
-Both with metadata containing agent_type so the A2A executor resolves
+Each with metadata containing agent_type so the A2A executor resolves
 the handler via AGENT_TYPE_MAP without relying on env-var fallbacks.
 """
 import json
@@ -74,6 +75,16 @@ AGENTS = [
         "agentName": os.environ.get("A2A_PI_AGENT_NAME", "pi Agent"),
         "metadata": {
             "agent_type": os.environ.get("A2A_PI_AGENT_TYPE", "pi"),
+        },
+    },
+    {
+        # omp sidecar sibling (compose profile: omp) — the SAME sidecar as
+        # pi in its `omp` dialect. omp gates its tools natively, so this
+        # agent's omp_permission_mode governs the approval dialogs.
+        "agentId": os.environ.get("A2A_OMP_AGENT_UUID", "a2a-omp-agent"),
+        "agentName": os.environ.get("A2A_OMP_AGENT_NAME", "omp Agent"),
+        "metadata": {
+            "agent_type": os.environ.get("A2A_OMP_AGENT_TYPE", "omp"),
         },
     },
     {

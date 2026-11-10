@@ -161,6 +161,10 @@ def _host_pi_url(env: Dict[str, str]) -> str:
     return _host_service_url(env, "PI_API_URL", "PI_PORT", "3300")
 
 
+def _host_omp_url(env: Dict[str, str]) -> str:
+    return _host_service_url(env, "OMP_API_URL", "OMP_PORT", "3310")
+
+
 def _host_banyan_gateway_url(env: Dict[str, str]) -> str:
     """HOST-reachable URL of docker-banyanos-gateway.
 
@@ -184,7 +188,7 @@ BANYANOS_GATEWAY_PORT.
 def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     """Build a config dict from .env + explicit overrides.
 
-    Accepted overrides: gateway_url, hermes_url, openclaw_url, token,
+    Accepted overrides: gateway_url, hermes_url, openclaw_url, omp_url, token,
     endpoint_id, part_id, agent_uuid, bridge.
 
     ``hermes_url`` / ``openclaw_url`` / ``goose_url`` default to HOST-reachable URLs
@@ -210,6 +214,7 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
     banyanos_gateway_url = (
         overrides.get("banyanos_gateway_url") or _host_banyan_gateway_url(env)
     ).rstrip("/")
+    omp_url = (overrides.get("omp_url") or _host_omp_url(env)).rstrip("/")
     endpoint_id = overrides.get("endpoint_id") or env.get("endpoint_id", "a2a")
     part_id = overrides.get("part_id") or env.get("part_id", "default")
     bridge = overrides.get("bridge")
@@ -219,6 +224,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         default_agent = env.get("A2A_HERMES_AGENT_UUID", "a2a-hermes-agent")
     elif bridge == "goose":
         default_agent = env.get("A2A_GOOSE_AGENT_UUID", "a2a-goose-agent")
+    elif bridge == "omp":
+        default_agent = env.get("A2A_OMP_AGENT_UUID", "a2a-omp-agent")
     elif bridge == "pi":
         default_agent = env.get("A2A_PI_AGENT_UUID", "a2a-pi-agent")
     elif bridge == "banyanos":
@@ -256,6 +263,8 @@ def resolve_config(env: Dict[str, str], **overrides) -> Dict[str, Any]:
         "goose_key": env.get("GOOSE_SECRET_KEY", ""),
         "pi_url": pi_url,
         "pi_key": env.get("PI_SECRET_KEY", ""),
+        "omp_url": omp_url,
+        "omp_key": env.get("OMP_SECRET_KEY", ""),
         "banyanos_gateway_url": banyanos_gateway_url,
         "banyanos_ws_url": banyanos_ws_url,
         "banyanos_endpoint_id": banyanos_endpoint_id,
@@ -366,6 +375,25 @@ def pi_sidecar_ok(pi_url: str, pi_key: str = "",
         r = requests.get(
             f"{pi_url}/health",
             headers={"X-Secret-Key": pi_key},
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return False
+        return r.json().get("status") == "ok"
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# omp sidecar probe (the bundled omp sibling — HTTP + SSE over `omp --mode rpc`)
+# ---------------------------------------------------------------------------
+def omp_sidecar_ok(omp_url: str, omp_key: str = "",
+                   timeout: int = 15) -> bool:
+    """GET /health with the shared secret; expect {"status": "ok", ...}."""
+    try:
+        r = requests.get(
+            f"{omp_url}/health",
+            headers={"X-Secret-Key": omp_key},
             timeout=timeout,
         )
         if r.status_code != 200:
@@ -874,7 +902,7 @@ __all__ = [
     "PROJECT_DIR", "ENV_FILE",
     "load_env", "mint_jwt", "resolve_token", "resolve_config",
     "health_ok", "openclaw_models_ok", "openclaw_chat_ok", "goose_acp_ok",
-    "pi_sidecar_ok", "banyanos_gateway_ok", "banyanos_graphql_ok",
+    "pi_sidecar_ok", "omp_sidecar_ok", "banyanos_gateway_ok", "banyanos_graphql_ok",
     "banyanos_login", "banyanos_ws_ok",
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",

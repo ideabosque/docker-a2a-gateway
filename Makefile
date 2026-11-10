@@ -1,6 +1,6 @@
 .PHONY: build up down logs gateway-logs status restart shell health clean rebuild dev \
         hermes-up hermes-down openclaw-up openclaw-down goose-up goose-down pi-up pi-down \
-        goose-test goose-chat pi-test pi-chat \
+        goose-test goose-chat pi-test pi-chat omp-up omp-down omp-test omp-chat \
         postgres-up postgres-down init
 
 # Overridable from the environment, e.g.
@@ -107,6 +107,24 @@ pi-up:
 # Stop the bundled pi sibling (gateway stays up)
 pi-down:
 	docker compose --profile pi stop pi
+
+# Bring up the bundled omp sibling (profile: omp) — the SAME sidecar as pi,
+# in its `omp` dialect: it drives `omp --mode rpc` child processes; the
+# gateway bridges to it at http://omp:3310.
+omp-up:
+	docker compose --profile omp up -d omp
+
+# Stop the bundled omp sibling (gateway stays up)
+omp-down:
+	docker compose --profile omp stop omp
+
+# Live E2E suite against the running gateway + omp sidecar
+omp-test:
+	python tests/omp/test_gateway_live.py
+
+# Interactive chatbot through the omp bridge (SSE streaming)
+omp-chat:
+	python tests/omp/test_chatbot.py
 
 # Live E2E suite against the running gateway + pi sidecar
 pi-test:

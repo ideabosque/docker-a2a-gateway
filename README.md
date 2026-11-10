@@ -5,7 +5,7 @@ A container image and `docker compose` stack that runs the
 **only** the [**a2a_protocol_plugin**](https://github.com/ideabosque/a2a_protocol_plugin)
 module registered — exposing the native **Agent-to-Agent (A2A)** protocol surface
 (JSON-RPC 2.0, GraphQL, SSE, Agent Card) and bridging A2A tasks to **any
-combination** of four optional agent backends:
+combination** of five optional agent backends:
 
 - **[Hermes Agent](https://hermes-agent.nousresearch.com)** (Nous Research) — an
   OpenAI-compatible API server (HTTP + SSE), bundled via the `hermes` compose
@@ -21,14 +21,19 @@ combination** of four optional agent backends:
   bundled behind a small Node **sidecar** (`./pi`) that drives
   `pi --mode rpc` child processes over stdin/stdout JSONL and serves HTTP +
   SSE, via the `pi` compose profile.
+- **[omp](https://github.com/can1357/oh-my-pi)** (oh-my-pi) — a fork of pi
+  with hash-anchored edits, LSP/DAP and native tool approvals; like pi it has
+  no network server, so it is bundled behind the **same** Node **sidecar**
+  (`./pi`) in its `omp` dialect, driving `omp --mode rpc` child processes over
+  stdin/stdout JSONL and serving HTTP + SSE, via the `omp` compose profile.
 
 State persists to a bundled **PostgreSQL** backend (DynamoDB is not supported by
 this image). This repository **consolidates** what were previously separate
 images (`docker-a2a-hermes-agent-gateway`, `docker-a2a-openclaw-gateway`) and
-adds goose and pi. The gateway image is the same whichever backends you use;
-Hermes, OpenClaw, goose, and pi are independent, profile-gated sibling services.
+adds goose, pi and omp. The gateway image is the same whichever backends you use;
+Hermes, OpenClaw, goose, pi and omp are independent, profile-gated sibling services.
 Enable any combination, and point `HERMES_API_URL` / `OPENCLAW_API_URL` /
-`GOOSE_API_URL` / `PI_API_URL` at external instances instead. Modeled on
+`GOOSE_API_URL` / `PI_API_URL` / `OMP_API_URL` at external instances instead. Modeled on:
 [`../docker-mcp-kg-gateway`](../docker-mcp-kg-gateway)'s pattern of one
 always-on gateway plus interchangeable optional siblings.
 
@@ -45,7 +50,9 @@ runtime secrets are baked in.
 Modeled on `docker-silvaengine-gateway` (build / supervisor / SSH-key
 install), `docker-hermes-agent` (the optional Hermes sibling service), and
 `docker-openclaw` (the optional OpenClaw sibling service). The goose sibling
-(`./goose`) installs a pinned goose release binary.
+(`./goose`) installs a pinned goose release binary; the pi and omp siblings
+share one Node sidecar image (`./pi`), whose `omp` variant installs a pinned
+standalone omp release binary.
 
 ---
 
@@ -103,25 +110,25 @@ bind-mounts from the host — see
 ## 🏗️ Architecture
 
 ```
-                ┌──────────────────────────────────────────────────────────────┐
-   A2A client   │  a2a-gateway (silvaengine_gateway + silvaengine_daemon       │
-   ───────────▶ │               + a2a_protocol_plugin)                         │
-  (JSON-RPC/SSE)│  /{ep}/a2a (JSON-RPC)   /{ep}/a2a_sse (SSE)                  │
-                │  /{ep}/a2a_core_graphql /{ep}/.well-known/agent-card.json    │
-                └──┬──────────────┬────────────────┬─────────────┬────────────┬─┘
-                   │              │                │             │            │
-      HermesAgentHandler  OpenClawAgentHandler  GooseAgentHandler  PiAgentHandler  SQLAlchemy
-      HERMES_API_URL      OPENCLAW_API_URL      GOOSE_API_URL     PI_API_URL      PG_HOST
-                   ▼              ▼                ▼             ▼            ▼
-         ┌──────────────────┐ ┌───────────────────┐ ┌───────────────┐ ┌──────────────┐
-         │ hermes [opt]     │ │ openclaw [opt]    │ │ goose [opt]   │ │ pi [opt]     │
-         │ OpenAI-compat    │ │ OpenAI-compat     │ │ goose serve   │ │ sidecar ─▶   │
-         │ API + dashboard  │ │ /v1/chat/...      │ │ ACP at /acp   │ │ pi --mode rpc│
-         └──────────────────┘ └───────────────────┘ └───────────────┘ └──────────────┘
+                ┌───────────────────────────────────────────────────────────────────────────┐
+   A2A client   │  a2a-gateway (silvaengine_gateway + silvaengine_daemon                    │
+   ───────────▶ │               + a2a_protocol_plugin)                                      │
+  (JSON-RPC/SSE)│  /{ep}/a2a (JSON-RPC)   /{ep}/a2a_sse (SSE)                               │
+                │  /{ep}/a2a_core_graphql /{ep}/.well-known/agent-card.json                 │
+                └──┬──────────────┬────────────────┬─────────────┬────────────┬────────────┬─┘
+                   │              │                │             │            │            │
+      HermesAgentHandler  OpenClawAgentHandler  GooseAgentHandler  PiAgentHandler  OmpAgentHandler  SQLAlchemy
+      HERMES_API_URL      OPENCLAW_API_URL      GOOSE_API_URL     PI_API_URL     OMP_API_URL      PG_HOST
+                   ▼              ▼                ▼             ▼            ▼            ▼
+         ┌──────────────────┐ ┌───────────────────┐ ┌───────────────┐ ┌──────────────┐ ┌────────────────┐
+         │ hermes [opt]     │ │ openclaw [opt]    │ │ goose [opt]   │ │ pi [opt]     │ │ omp [opt]      │
+         │ OpenAI-compat    │ │ OpenAI-compat     │ │ goose serve   │ │ sidecar ─▶   │ │ sidecar ─▶     │
+         │ API + dashboard  │ │ /v1/chat/...      │ │ ACP at /acp   │ │ pi --mode rpc│ │ omp --mode rpc │
+         └──────────────────┘ └───────────────────┘ └───────────────┘ └──────────────┘ └────────────────┘
 ```
 
 The gateway is the only always-on service. **Hermes**, **OpenClaw**,
-**goose**, **pi**, and **PostgreSQL** are all profile-gated siblings — bundle
+**goose**, **pi**, **omp**, and **PostgreSQL** are all profile-gated siblings — bundle
 whichever you need, or turn a profile off and point its `*_API_URL` / `PG_*`
 at an external instance. Which bridge a given A2A request reaches is decided
 per agent (see
@@ -141,8 +148,8 @@ goose are the same shape, swapping the handler and target):
                   → partition_key = "{ep}#{Part-Id}"
 3. a2a_daemon     dispatch_a2a → A2ADaemonExecutor
                   → resolve_agent(): agent metadata (DB) > setting dict > Config (env)
-4. Handler        HermesAgentHandler, OpenClawAgentHandler, GooseAgentHandler
-                   or PiAgentHandler (per-agent metadata, or
+4. Handler        HermesAgentHandler, OpenClawAgentHandler, GooseAgentHandler,
+                   PiAgentHandler or OmpAgentHandler (per-agent metadata, or
                    A2A_AI_AGENT_TYPE fallback)
 5. Bridge         Hermes:   POST {HERMES_API_URL}/v1/runs, GET .../events (SSE)
                   OpenClaw: POST {OPENCLAW_API_URL}/v1/chat/completions (stream)
@@ -153,6 +160,11 @@ goose are the same shape, swapping the handler and target):
                             POST .../prompt (SSE pi events + run_end),
                             POST .../abort on cancel, POST .../ui-response
                             for dialog answers
+                  omp:      the same sidecar HTTP + SSE surface —
+                            POST {OMP_API_URL}/sessions, POST .../prompt
+                            (SSE omp events + run_end), POST .../abort on
+                            cancel, POST .../ui-response for the native
+                            approval select
 6. Broadcast      token chunks → subscribers on GET /{ep}/a2a_sse
 7. Persist        task + messages written to PostgreSQL (a2a_* tables, RLS-scoped)
 8. Response       accumulated reply also returned in the HTTP JSON-RPC result
@@ -160,8 +172,8 @@ goose are the same shape, swapping the handler and target):
 
 Step 8 matters: even when streaming, the HTTP response carries the full reply,
 so a client that misses SSE frames can still fall back to it (this is exactly
-what step 06 of `tests/hermes/test_sse_live.py`, `tests/openclaw/test_sse_live.py`
-and `tests/goose/test_sse_live.py` verifies).
+what step 06 of `tests/hermes/test_sse_live.py`, `tests/openclaw/test_sse_live.py`,
+`tests/goose/test_sse_live.py` and `tests/pi/test_sse_live.py` verifies).
 
 ---
 
@@ -170,7 +182,7 @@ and `tests/goose/test_sse_live.py` verifies).
 ```text
 .
 ├── Dockerfile                  # Python 3.12-slim + uv + supervisor build (SSH deploy key)
-├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / goose / pi / postgres siblings
+├── docker-compose.yml          # a2a-gateway + optional hermes / openclaw / goose / pi / omp / postgres siblings
 ├── requirements.txt            # third-party deps + shared SilvaEngine libs (git over SSH)
 ├── requirements-modules.txt    # silvaengine_gateway + a2a_protocol_plugin + silvaengine_daemon (--no-deps, git over SSH)
 ├── routes.yaml                 # route manifest — just a loader, see addons/
@@ -180,7 +192,7 @@ and `tests/goose/test_sse_live.py` verifies).
 │   └── example.module.yaml.disabled # copy-paste template for a new addon
 ├── scripts/
 │   ├── merge_addon_routes.py    # merges addons/*.yaml into data/_addons_generated.yaml
-│   ├── seed_agents.py           # upserts all four backend agent records
+│   ├── seed_agents.py           # upserts all five backend agent records
 │   └── generate_env.py          # creates .env from .env.example with random per-deployment secrets
 ├── docker-entrypoint.sh        # runs the addon merge, then execs supervisord
 ├── supervisord.conf            # single gateway process under supervisor
@@ -199,7 +211,8 @@ and `tests/goose/test_sse_live.py` verifies).
 │   │   └── test_chatbot.py        # interactive REPL with live SSE streaming
 │   ├── openclaw/                # OpenClaw-bridge scripts (same five-script shape)
 │   ├── goose/                   # goose-bridge scripts (same five-script shape)
-│   └── pi/                      # pi smoke, gateway, SSE, approval, and protocol scripts
+│   ├── pi/                      # pi smoke, gateway, SSE, approval, and protocol scripts
+│   └── omp/                     # omp smoke, gateway, SSE, and chatbot scripts
 ├── openclaw/                   # OpenClaw sibling build context
 │   ├── Dockerfile               # almalinux + Node.js + Python + openclaw CLI
 │   ├── docker-entrypoint.sh     # copies the mounted deploy key into ~/.ssh, fixes perms, execs CMD
@@ -210,12 +223,13 @@ and `tests/goose/test_sse_live.py` verifies).
 │   ├── docker-entrypoint.sh     # server secret + first-start provider config, writes goose-serve.sh
 │   ├── healthcheck.sh           # compose healthcheck (ACP initialize probe)
 │   └── goose.ini                # supervisor program def for `goose serve`
-├── pi/                          # pi sibling: Node sidecar (HTTP + SSE) driving
-│                                #   `pi --mode rpc` (pi has no network server)
-│   ├── src/                 #   rpc driver, session pool, HTTP server
-│   ├── extensions/          #   tool-approval.js — dialogs for gated tools
-│   ├── test/                #   framing + pool + extension tests (fake pi)
-│   ├── Dockerfile           #   node:24 + pinned pi CLI (npm)
+├── pi/                          # pi + omp siblings: Node sidecar (HTTP + SSE) driving
+│                                #   `pi --mode rpc` / `omp --mode rpc` (neither agent
+│                                #   has a network server)
+│   ├── src/                 #   rpc driver, dialect layer, session pool, HTTP server
+│   ├── extensions/          #   tool-approval.js — dialogs for gated tools (pi only)
+│   ├── test/                #   framing + pool + extension + dialect tests (fake pi / fake omp)
+│   ├── Dockerfile           #   node:24 + pinned pi CLI (npm) or pinned omp release binary
 │   ├── docker-entrypoint.sh #   first-start compat-endpoint config
 │   └── healthcheck.sh       #   GET /health with the shared secret
 ├── data/                       # persisted gateway state ➜ /app/data (also holds the generated addon manifest)
@@ -226,6 +240,8 @@ and `tests/goose/test_sse_live.py` verifies).
     ├── hermes/                  # Hermes state (profile: hermes)
     ├── openclaw/                # OpenClaw config/agents/sessions (profile: openclaw)
     ├── goose-workspace/         # goose agent working dir ➜ /workspace (profile: goose)
+    ├── pi-workspace/            # pi agent working dir ➜ /workspace (profile: pi)
+    ├── omp-workspace/           # omp agent working dir ➜ /workspace (profile: omp)
     └── projects/                # shared workspace folder (hermes + openclaw)
 ```
 
@@ -237,7 +253,7 @@ state and secrets.
 
 ## 🚀 Quick start
 
-For the default bundled stack (gateway + PostgreSQL + all four agent backends):
+For the default bundled stack (gateway + PostgreSQL + all five agent backends):
 
 ```bash
 cp .env.example .env
@@ -250,7 +266,7 @@ mkdir -p www/hermes www/projects
 
 # Set up ./.ssh first — see "Private repos over SSH" below.
 docker compose build
-docker compose up -d           # COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi is the template default
+docker compose up -d           # COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi is the template default (add `omp` for the omp sibling)
 
 docker compose ps              # wait for (healthy)
 curl -f http://localhost:8765/health
@@ -298,7 +314,7 @@ to a public registry).
 
 ## 🚢 Using docker compose
 
-The stack has **one always-on service** and **five optional profile-gated
+The stack has **one always-on service** and **six optional profile-gated
 siblings**:
 
 | Service | Container name (default) | Always on? | Profile | Purpose |
@@ -309,15 +325,16 @@ siblings**:
 | `openclaw` | `container-openclaw` | optional | `openclaw` | Bundled OpenClaw Gateway (OpenAI-compatible API) |
 | `goose` | `container-goose` | optional | `goose` | Bundled goose ACP server |
 | `pi` | `container-pi` | optional | `pi` | Bundled HTTP/SSE sidecar driving pi RPC processes |
+| `omp` | `container-omp` | optional | `omp` | Bundled HTTP/SSE sidecar (the same sidecar as pi, `omp` dialect) driving omp RPC processes |
 
 PostgreSQL is the **sole** persistence backend (`db_backend=postgresql` is
 forced in the image — no DynamoDB). The bundled `postgres` service is optional
 only in the sense that you may instead point `PG_*` at an external Postgres.
 
-`hermes`, `openclaw`, `goose`, and `pi` are independent — enable any combination; an
+`hermes`, `openclaw`, `goose`, `pi`, and `omp` are independent — enable any combination; an
 unbundled bridge just needs its `*_API_URL` pointed at an external instance.
 
-The gateway `depends_on` all five siblings with `required: false`, so it
+The gateway `depends_on` all six siblings with `required: false`, so it
 waits for whichever profiles are active and starts anyway when they are off.
 
 ### ⚠️ Editing `.env` (read this first)
@@ -376,7 +393,7 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 `OPENAI_COMPAT_MODEL` once in `.env`, then use `HERMES_MODEL_PROVIDER=openai`
 (Hermes) and `OPENCLAW_MODEL_PROVIDER=openai_compat` (OpenClaw). See `.env.example` for details.
 
-`COMPOSE_PROFILES` is the single switch for all five siblings
+`COMPOSE_PROFILES` is the single switch for all six siblings
 (comma-separated):
 
 | Value | Services started |
@@ -387,15 +404,16 @@ Studio, etc.), set `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` /
 | `COMPOSE_PROFILES=openclaw` | gateway + bundled OpenClaw |
 | `COMPOSE_PROFILES=goose` | gateway + bundled goose (`goose serve`) |
 | `COMPOSE_PROFILES=pi` | gateway + bundled pi sidecar (drives `pi --mode rpc`) |
+| `COMPOSE_PROFILES=omp` | gateway + bundled omp sidecar (drives `omp --mode rpc`) |
 | `COMPOSE_PROFILES=hermes,openclaw` | gateway + Hermes + OpenClaw |
 | `COMPOSE_PROFILES=postgres,hermes` | gateway + Postgres + Hermes |
-| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi` | everything bundled |
+| `COMPOSE_PROFILES=postgres,hermes,openclaw,goose,pi` | everything bundled (the `.env.example` default — add `omp` for the omp sibling) |
 
 When a sibling is bundled, keep its host reference pointed at the service
 name: `PG_HOST=postgres`, `HERMES_API_URL=http://hermes:<API_SERVER_PORT>`,
 `OPENCLAW_API_URL=http://openclaw:18789`, `GOOSE_API_URL=http://goose:3284`,
-`PI_API_URL=http://pi:3300`. When a sibling is external, point those at your
-own instance (e.g.
+`PI_API_URL=http://pi:3300`, `OMP_API_URL=http://omp:3310`. When a sibling is
+external, point those at your own instance (e.g.
 `PG_HOST=host.docker.internal`, `HERMES_API_URL=http://host.docker.internal:8642`).
 
 **goose secret.** `goose serve` always requires a shared secret, and
@@ -413,10 +431,17 @@ and saves it to `/data/server-secret.txt` in the `pi-data` volume
 (`docker exec container-pi cat /data/server-secret.txt`); copy it into both
 variables and recreate the gateway.
 
+**omp secret.** Same contract, same generator: `OMP_SIDECAR_SECRET_KEY` (omp
+sidecar) must equal `OMP_SECRET_KEY` (gateway side); `scripts/generate_env.py`
+fills both. If the omp side is empty, the sidecar generates one on first start
+and saves it to `/data/server-secret.txt` in the `omp-data` volume
+(`docker exec container-omp cat /data/server-secret.txt`); copy it into both
+variables and recreate the gateway.
+
 ### Step 2 — Create the bind-mount directories for whichever siblings you bundle
 
 ```bash
-mkdir -p www/hermes www/projects www/goose-workspace www/pi-workspace
+mkdir -p www/hermes www/projects www/goose-workspace www/pi-workspace www/omp-workspace
 ```
 
 (Optional — Docker creates missing bind-mount folders on first `up`.)
@@ -426,10 +451,12 @@ the `openclaw-data` named volume (`OPENCLAW_FOLDER`) → `/root/.openclaw` is
 all OpenClaw config/agents/sessions (a named volume because OpenClaw's config
 writes fail on Docker Desktop bind mounts — on Linux you may set it to a host
 folder such as `./www/openclaw`); `www/projects` (`PROJECTS_FOLDER`) is a shared
-workspace mounted by Hermes, OpenClaw, Goose and Pi. Goose and Pi access it
-at `/workspace/projects`, alongside their default `/workspace` folders
-(`GOOSE_WORKSPACE_FOLDER` and `PI_WORKSPACE_FOLDER`). Goose config and
-sessions live in the `goose-data` / `goose-share` named volumes.
+workspace mounted by Hermes, OpenClaw, Goose, Pi and omp. Goose, Pi and omp
+access it at `/workspace/projects`, alongside their default `/workspace` folders
+(`GOOSE_WORKSPACE_FOLDER`, `PI_WORKSPACE_FOLDER` and `OMP_WORKSPACE_FOLDER`).
+Goose config and sessions live in the `goose-data` / `goose-share` named
+volumes; the omp sidecar keeps its secret, session files and resume index in
+`omp-data`, and omp's user config (`models.yml`) in `omp-agent`.
 
 ### Step 3 — Build
 
@@ -457,6 +484,11 @@ Node.js + Python + the `openclaw` CLI via `pnpm`) — that build is heavier and
 only runs when the `openclaw` profile is active. The `goose` service builds
 from `./goose` (debian-slim + the goose release binary pinned by
 `GOOSE_VERSION`) when the `goose` profile is active.
+The `pi` and `omp` services share one sidecar image built from `./pi`
+(`node:24`); the build arg `AGENT_DIALECT` picks the agent — `pi` installs the
+pinned pi CLI from npm (`PI_VERSION`), `omp` installs the pinned standalone
+omp release binary (`OMP_VERSION`, SHA-256 verified against the release's
+`SHA256SUMS.txt`). The build runs when the `pi` / `omp` profile is active.
 
 ### Step 4 — Start the stack
 
@@ -468,7 +500,7 @@ You can let `.env`'s `COMPOSE_PROFILES` drive which services come up, or pass
 docker compose up -d
 
 # Or start specific profiles explicitly (adds to whatever .env selected):
-docker compose --profile postgres --profile hermes --profile openclaw --profile goose up -d
+docker compose --profile postgres --profile hermes --profile openclaw --profile goose --profile omp up -d
 
 # Gateway only, ignoring .env profiles:
 COMPOSE_PROFILES= docker compose up -d a2a-gateway
@@ -483,6 +515,8 @@ docker compose ps
 # container-hermes     Up X seconds (healthy)   (if hermes profile)
 # container-openclaw   Up X seconds             (if openclaw profile — no healthcheck defined)
 # container-goose      Up X seconds (healthy)   (if goose profile)
+# container-pi         Up X seconds (healthy)   (if pi profile)
+# container-omp        Up X seconds (healthy)   (if omp profile)
 ```
 
 Healthcheck timings: the gateway allows a 40 s `start_period` then probes
@@ -492,6 +526,10 @@ Healthcheck timings: the gateway allows a 40 s `start_period` then probes
 `initialize` on `/acp` that closes its connection afterwards. OpenClaw
 has no compose healthcheck — poll its `/v1/models` endpoint or `make openclaw-up`
 followed by `docker compose logs -f openclaw` instead.
+
+The pi and omp sidecars have a compose healthcheck too (`pi/healthcheck.sh`):
+the secret from `PI_SIDECAR_SECRET_KEY` / `OMP_SIDECAR_SECRET_KEY` (or
+`<dataDir>/server-secret.txt`) and the port from `PI_PORT` / `OMP_PORT`.
 
 ### Step 5 — Verify
 
@@ -584,6 +622,7 @@ for an instant end-to-end check.
 | `openclaw` | `OPENCLAW_PORT` (`18789`) | `18789` | OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`) |
 | `goose` | `GOOSE_PORT` (`3284`) | `3284` | `goose serve` ACP endpoint (`/acp`, requires `X-Secret-Key`) |
 | `pi` | `PI_PORT` (`3300`) | `3300` | pi sidecar (HTTP + SSE wrapping `pi --mode rpc`, requires `X-Secret-Key`) |
+| `omp` | `OMP_PORT` (`3310`) | `3310` | omp sidecar (HTTP + SSE wrapping `omp --mode rpc`, requires `X-Secret-Key`) |
 | `postgres` | `POSTGRES_PORT` (`5432`) | `5432` | PostgreSQL |
 
 The gateway binds `GATEWAY_HOST` (`0.0.0.0`) inside the container. Host and
@@ -610,17 +649,25 @@ host-side conflict without touching the app config.
 | `openclaw-data` volume (`OPENCLAW_FOLDER`) | `/root/.openclaw` | openclaw | All OpenClaw config/agents/sessions (named volume; bind mounts break OpenClaw on Docker Desktop) |
 | `./www` | `/var/www` | openclaw | Full www mirror (logs, projects, openclaw) |
 | `./.ssh` (`SSH_HOST_DIR`) | `/root/.ssh-src` (ro) | openclaw | Same deploy key as the main gateway build — entrypoint copies it into a proper `~/.ssh` at container start |
-| `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) / `/workspace/projects` (goose, pi) | hermes, openclaw, goose, pi | Shared workspace |
+| `./www/projects` (`PROJECTS_FOLDER`) | `/opt/projects` (hermes) / `/var/www/projects` (openclaw) / `/workspace/projects` (goose, pi, omp) | hermes, openclaw, goose, pi, omp | Shared workspace |
 | `/var/run/docker.sock` (`DOCKER_SOCK`) | `/var/run/docker.sock` | hermes | Host Docker access — see [Security notes](#-security-notes) |
 | `./www/goose-workspace` (`GOOSE_WORKSPACE_FOLDER`) | `/workspace` | goose | The goose agent's working directory (`GOOSE_CWD`) |
 | `goose-data` volume (`GOOSE_DATA_FOLDER`) | `/root/.config/goose` | goose | goose `config.yaml` + `server-secret.txt` |
 | `goose-share` volume (`GOOSE_SHARE_FOLDER`) | `/root/.local/share/goose` | goose | goose sessions database + logs |
+| `./www/pi-workspace` (`PI_WORKSPACE_FOLDER`) | `/workspace` | pi | The pi agent's working directory (`PI_CWD`) |
+| `pi-data` volume (`PI_DATA_FOLDER`) | `/data` | pi | Sidecar secret, session files, resume index |
+| `pi-agent` volume (`PI_AGENT_DIR_FOLDER`) | `/root/.pi/agent` | pi | pi user config (`settings.json`, `models.json`) |
+| `./www/omp-workspace` (`OMP_WORKSPACE_FOLDER`) | `/workspace` | omp | The omp agent's working directory (`OMP_CWD`) |
+| `omp-data` volume (`OMP_DATA_FOLDER`) | `/data` | omp | Sidecar secret, omp session files, resume index |
+| `omp-agent` volume (`OMP_AGENT_DIR_FOLDER`) | `/root/.omp/agent` | omp | omp user config (`models.yml`) |
 
 The host-path rows are bind mounts, so `docker compose down -v` does not erase
 them — delete the host directories to reset state. The named volumes
-(`openclaw-data`, `goose-data`, `goose-share`) **are** removed by
+(`openclaw-data`, `goose-data`, `goose-share`, `pi-data`, `pi-agent`,
+`omp-data`, `omp-agent`) **are** removed by
 `docker compose down -v`; for goose that also deletes the generated server
-secret and every goose session (A2A conversations then start fresh).
+secret and every goose session (A2A conversations then start fresh), and for
+pi / omp the sidecar secret and every session file.
 
 ---
 
@@ -701,7 +748,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, `goose`, `pi`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
+| `A2A_AI_AGENT_TYPE` | `hermes` | Handler shorthand: `hermes`, `core_engine`, `openclaw`, `goose`, `pi`, `omp`, or `llm` (maps to module/class via `AGENT_TYPE_MAP`) |
 | `A2A_DEFAULT_AGENT_UUID` | `a2a-hermes-agent` | Agent used when a request targets none (env-var fallback for Config) |
 | `A2A_HERMES_AGENT_UUID` | `a2a-hermes-agent` | Hermes agent UUID (seeded into `a2a_agents` by `scripts/seed_agents.py`) |
 | `A2A_HERMES_AGENT_NAME` | `Hermes Agent` | Hermes agent display name |
@@ -717,7 +764,7 @@ directly from `PG_USER` / `PG_PASSWORD` / `PG_DB` above (see
 | `A2A_SHOW_REASONING` | `true` | Stream model reasoning as tagged SSE chunks (`artifact.metadata.data_format = "reasoning"`), separate from the answer. Override per agent (agent metadata `show_reasoning`) or per request (`params.metadata.show_reasoning`); see [Reasoning](#reasoning) |
 
 Config resolution priority (per-agent): **agent metadata (DB, seeded on
-startup) > setting dict > Config class (env vars above)**. All four agent
+startup) > setting dict > Config class (env vars above)**. All five agent
 records are auto-seeded — see
 [Running several bridges side by side](#-running-several-bridges-side-by-side).
 
@@ -875,13 +922,50 @@ still pass through.
 | `PI_DATA_FOLDER` / `PI_AGENT_DIR_FOLDER` | `pi-data` / `pi-agent` | Volumes for sidecar state (secret, session files, resume index) / pi user config (`settings.json`, `models.json`) |
 | `PI_WORKSPACE_FOLDER` | `./www/pi-workspace` | Host folder mounted at `/workspace`; shared projects are mounted separately at `/workspace/projects` using `PROJECTS_FOLDER` |
 
+### omp bridge (a2a_protocol_plugin)
+
+The omp bridge forwards A2A tasks to the bundled omp sidecar — the **same**
+Node sidecar as pi, in its `omp` dialect — which drives `omp --mode rpc`
+child processes over stdin/stdout JSONL (omp has **no network server** — the
+sidecar is the HTTP+SSE boundary). The transport is shared with pi
+(`handlers/pi_client.py`); design notes live in the plugin's
+`docs/OMP_INTEGRATION_PLAN.md` and `./pi/README.md`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OMP_API_URL` | `http://omp:3310` | Where the gateway reaches the omp sidecar. Keep the bundled value when the `omp` profile is on; point it at your own sidecar when it is off |
+| `OMP_SECRET_KEY` | — | Sent as `X-Secret-Key` on every request; **must equal** the sidecar's `OMP_SIDECAR_SECRET_KEY` |
+| `OMP_CWD` | `/workspace` | Working directory for new omp sessions (inside the omp container) |
+| `OMP_SIDE_MODEL` | — | Default model as `provider/modelId` or an omp role (e.g. `slow`); per-agent metadata `omp_model` overrides. Credentials are omp's own provider env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ... — omp docs `models.md`); a custom OpenAI-compatible endpoint is configured via `OMP_COMPAT_*` below. (`OMP_SIDE_*`, not omp's own `OMP_*` names — the sidecar strips those from the spawned child) |
+| `OMP_SIDE_THINKING` | — | Default thinking level (`inherit`, `off` … `max`); per-agent metadata `omp_thinking` overrides. Reasoning streams as tagged chunks (see [Reasoning](#reasoning)); `A2A_SHOW_REASONING` still applies |
+| `OMP_PERMISSION_MODE` | `auto_allow` | How the bridge answers omp's **native approval dialogs** (`auto_allow`: pick the allow option, `deny`: pick the deny option, `ask`: `INPUT_REQUIRED` until the user's `approval_response` — long-lived gateway). The allow / deny option is matched by the labels in `omp_approval_allow_labels` / `omp_approval_deny_labels` or by the conventional words; a dialog whose options cannot be classified is cancelled (fail closed) |
+| `OMP_BUSY_BEHAVIOR` | `followUp` | What a second message does while omp is still streaming: `followUp` (queue until the agent stops), `steer` (deliver before the next LLM call), or `reject` |
+| `OMP_STREAM_TIMEOUT` / `OMP_APPROVAL_TIMEOUT` | `300` / `120` | Turn timeout; how long `ask` waits before cancelling a dialog |
+
+### Bundled omp sibling (profile `omp`)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `OMP_VERSION` | `18.18.2` | Pinned standalone omp release installed by `./pi/Dockerfile` (build arg `AGENT_DIALECT=omp`); the binary's SHA-256 is verified against the release's `SHA256SUMS.txt` at build time. Bump deliberately and re-run `tests/omp/*` — the RPC protocol is version-sensitive |
+| `OMP_PORT` | `3310` | Published host port for the sidecar |
+| `OMP_CONTAINER_NAME` | `container-omp` | Container name |
+| `OMP_SIDECAR_SECRET_KEY` | generated on first start | Sidecar shared secret — **required**. Set `OMP_SECRET_KEY` to the same value. If empty, first start generates one, prints it, and saves it to `/data/server-secret.txt` in the `omp-data` volume |
+| `OMP_COMPAT_BASE_URL` / `OMP_COMPAT_API_KEY` / `OMP_COMPAT_MODEL` | — / — / — | First-start compatible-endpoint config (omp docs `models.md`): writes `/root/.omp/agent/models.yml` with the provider `compat` (`api: openai-completions`) targeting `OMP_COMPAT_BASE_URL` (defaults to the shared `OPENAI_COMPAT_BASE_URL`) — use `OMP_SIDE_MODEL=compat/<OMP_COMPAT_MODEL>` |
+| `OMP_SIDE_TOOLS` | — | Comma list of tools for the spawned omp process (e.g. `read,bash,edit,write`) |
+| `OMP_SIDE_EXTRA_ARGS` | — | Extra omp CLI flags per session, e.g. `--no-title` |
+| `OMP_SIDE_APPROVAL_MODE` | `always-ask` | omp's own tool-approval mode: `always-ask` (default), `always-ask-cached`, `write`, or `yolo`. With `yolo` no approval dialog is raised at all, so `omp_permission_mode` has no effect |
+| `OMP_SIDE_NO_LSP` | `1` | `1` (default) skips the language-server startup in the container (`--no-lsp`) |
+| `OMP_SIDE_MAX_COST` | — | Optional spend cap per spawned session, in USD (`--max-cost`) |
+| `OMP_DATA_FOLDER` / `OMP_AGENT_DIR_FOLDER` | `omp-data` / `omp-agent` | Volumes for sidecar state (secret, session files, resume index) / omp user config (`models.yml`) |
+| `OMP_WORKSPACE_FOLDER` | `./www/omp-workspace` | Host folder mounted at `/workspace`; shared projects are mounted separately at `/workspace/projects` using `PROJECTS_FOLDER` |
+
 ### Shared
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into Hermes, OpenClaw, Goose and Pi when bundled |
+| `PROJECTS_FOLDER` | `./www/projects` | Workspace bind-mounted into Hermes, OpenClaw, Goose, Pi and omp when bundled |
 | `OLLAMA_API_KEY` / `OLLAMA_BASE_URL` / `OLLAMA_HOST` | — | Ollama Cloud, shared between Hermes (`OLLAMA_BASE_URL`), OpenClaw and goose (`OLLAMA_HOST`) |
-| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`), OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`) and goose (`GOOSE_MODEL_PROVIDER=openai_compat`) |
+| `OPENAI_COMPAT_BASE_URL` / `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_MODEL` | — | Generic OpenAI-compatible endpoint, shared between Hermes (`HERMES_MODEL_PROVIDER=openai`), OpenClaw (`OPENCLAW_MODEL_PROVIDER=openai_compat`), goose (`GOOSE_MODEL_PROVIDER=openai_compat`) and omp (`OMP_COMPAT_BASE_URL`, `OMP_COMPAT_API_KEY`, `OMP_COMPAT_MODEL`) |
 
 ### Scaling (`GATEWAY_WORKERS > 1`)
 
@@ -917,7 +1001,7 @@ for reference fragments per engine (KGE, RFQ, MCP, AI agent core, ...).
 
 ## 🔀 Running several bridges side by side
 
-All four agent bridges (Hermes, OpenClaw, goose, pi) are auto-seeded into the
+All five agent bridges (Hermes, OpenClaw, goose, pi, omp) are auto-seeded into the
 `a2a_agents` database table on container startup by `scripts/seed_agents.py`
 (a supervisor program that runs once after the gateway is healthy). The
 seeder reads the agent UUID, name, and type from `.env`:
@@ -936,6 +1020,9 @@ seeder reads the agent UUID, name, and type from `.env`:
 | `A2A_PI_AGENT_UUID` | `a2a-pi-agent` | pi agent record UUID |
 | `A2A_PI_AGENT_NAME` | `pi Agent` | pi agent display name |
 | `A2A_PI_AGENT_TYPE` | `pi` | Agent type shorthand |
+| `A2A_OMP_AGENT_UUID` | `a2a-omp-agent` | omp agent record UUID |
+| `A2A_OMP_AGENT_NAME` | `omp Agent` | omp agent display name |
+| `A2A_OMP_AGENT_TYPE` | `omp` | Agent type shorthand |
 
 The seeder uses the `insertUpdateA2aAgent` GraphQL mutation (upsert), so it's
 safe to run on every container start — existing records are updated, not
@@ -966,6 +1053,7 @@ With several bridges bundled, requests route by `agent_uuid`:
 - `agent_uuid: a2a-openclaw-agent` → `OpenClawAgentHandler`
 - `agent_uuid: a2a-goose-agent` → `GooseAgentHandler`
 - `agent_uuid: a2a-pi-agent` → `PiAgentHandler`
+- `agent_uuid: a2a-omp-agent` → `OmpAgentHandler`
 
 No manual GraphQL mutation is needed — all records exist after `docker compose up -d`.
 A record is seeded even when its sibling profile is off; requests to it then
@@ -979,7 +1067,9 @@ client-chosen `metadata.thread_uuid` sent on every turn also works (the
 conversation; goose and the core engine keep history themselves, and the
 gateway maps the conversation to their own session/thread per tenant
 (`Part-Id`), so the same id under another tenant starts a new conversation
-instead of resuming someone else's.
+instead of resuming someone else's. The pi and omp sidecars keep the history
+in their own session file — the gateway maps the conversation key to a sidecar
+session id per tenant, exactly like the pi bridge does.
 
 ---
 
@@ -1123,6 +1213,7 @@ the final reply carries it separately as `metadata.reasoning`.
 |---|---|
 | goose | `agent_thought_chunk` updates |
 | pi | `message_update` → `assistantMessageEvent.thinking_delta` (full `thinking_end` / `message_end` copies are never re-emitted) |
+| omp | `message_update` → `assistantMessageEvent.thinking_delta` (same shape as pi; the full `thinking_end` / `message_end` copies are never re-emitted) |
 | Hermes | `reasoning.delta` events (a `reasoning.available` that only repeats the answer is dropped) |
 | OpenClaw | `delta.reasoning_content` / `delta.reasoning` — OpenClaw sends none today |
 | core engine | `rs#`-tagged frames from the LLM handler (enable with the agent's model `thinking` / `reasoning` setting) |
@@ -1231,6 +1322,12 @@ bare private-repo name — already satisfied above.
 | `make goose-up` / `make goose-down` | Start/stop the bundled goose sibling |
 | `make goose-test` | Run the goose live E2E suite (`tests/goose/test_gateway_live.py`) |
 | `make goose-chat` | Interactive chatbot through the goose bridge (`tests/goose/test_chatbot.py`) |
+| `make pi-up` / `make pi-down` | Start/stop the bundled pi sidecar sibling |
+| `make pi-test` | Run the pi live E2E suite (`tests/pi/test_gateway_live.py`) |
+| `make pi-chat` | Interactive chatbot through the pi bridge (`tests/pi/test_chatbot.py`) |
+| `make omp-up` / `make omp-down` | Start/stop the bundled omp sidecar sibling |
+| `make omp-test` | Run the omp live E2E suite (`tests/omp/test_gateway_live.py`) |
+| `make omp-chat` | Interactive chatbot through the omp bridge (`tests/omp/test_chatbot.py`) |
 | `make postgres-up` / `make postgres-down` | Start/stop the bundled PostgreSQL sibling |
 
 **Make does not read `.env`.** Two variables are declared with `?=` defaults and
@@ -1259,7 +1356,9 @@ tests/
 ├── hermes/                # test_hello.py, test_hello_sse.py, test_gateway_live.py,
 │                          # test_sse_live.py, test_chatbot.py
 ├── openclaw/              # same five scripts, OpenClaw bridge
-└── goose/                 # same five scripts, goose bridge
+├── goose/                 # same five scripts, goose bridge
+├── pi/                    # same five scripts + the P1 protocol spike, pi bridge
+└── omp/                   # same five scripts + the omp protocol spike, omp bridge
 ```
 
 Each script resolves `.env` from the repo root regardless of your current
@@ -1295,6 +1394,12 @@ pip install requests
 | [tests/pi/test_sse_live.py](tests/pi/test_sse_live.py) | pi | E2E suite | 7 checks: the Hermes SSE checks plus a direct sidecar SSE prompt and a reasoning check |
 | [tests/pi/test_chatbot.py](tests/pi/test_chatbot.py) | pi | interactive | REPL against the A2A surface with live SSE streaming |
 | [tests/pi/test_spike_protocol.py](tests/pi/test_spike_protocol.py) | pi | P1 spike | Drives the sidecar directly (health, sessions, prompts, thinking, tool call, 409/followUp, abort, resume) and captures a transcript (`--out`); the acceptance evidence for the pinned pi version |
+| [tests/omp/test_hello.py](tests/omp/test_hello.py) | omp | smoke | Non-streaming hello through the omp bridge |
+| [tests/omp/test_hello_sse.py](tests/omp/test_hello_sse.py) | omp | smoke | One-shot streamed hello |
+| [tests/omp/test_gateway_live.py](tests/omp/test_gateway_live.py) | omp | E2E suite | Same nine steps as the Hermes suite; step 01 probes the sidecar `GET /health` |
+| [tests/omp/test_sse_live.py](tests/omp/test_sse_live.py) | omp | E2E suite | 7 checks: the Hermes SSE checks plus a direct sidecar SSE prompt and a reasoning check |
+| [tests/omp/test_chatbot.py](tests/omp/test_chatbot.py) | omp | interactive | REPL against the A2A surface with live SSE streaming |
+| [tests/omp/test_spike_protocol.py](tests/omp/test_spike_protocol.py) | omp | O1 spike | Drives the sidecar directly (health, sessions, prompts, thinking, tool call, 409/followUp, abort, resume) and captures a transcript (`--out`); the acceptance evidence for the pinned omp version |
 | [tests/a2a_test_utils.py](tests/a2a_test_utils.py) | all | library | Shared helpers — not run directly |
 
 
@@ -1303,11 +1408,15 @@ python tests/hermes/test_hello.py
 python tests/openclaw/test_hello.py
 python tests/goose/test_hello.py
 python tests/pi/test_hello.py
+python tests/omp/test_hello.py
 # ...and so on for whichever bridge(s) you have bundled
 ```
 
 All non-interactive scripts print PASS/FAIL per step and **exit non-zero on
 failure**, so they work as CI gates.
+
+For immediate-return A2A tasks, result recovery, SSE reconnect, deadlines, and
+cross-bridge Docker acceptance, see the [long-running task test plan](docs/LONG_RUNNING_TASKS_TEST_PLAN.md).
 
 ### Flags
 
@@ -1318,6 +1427,7 @@ failure**, so they work as CI gates.
 | `--openclaw-url` | openclaw scripts | Override the host-reachable OpenClaw URL used for health checks |
 | `--goose-url` | goose scripts | Override the host-reachable goose URL used for the ACP probes |
 | `--pi-url` | pi scripts | Override the host-reachable pi sidecar URL used for the `/health` probe |
+| `--omp-url` | omp scripts | Override the host-reachable omp sidecar URL used for the `/health` probe |
 | `--token` | all | Use a pre-minted JWT instead of resolving one |
 | `--endpoint-id` | all | Default `a2a` |
 | `--part-id` | all | Default `default` |
@@ -1336,12 +1446,14 @@ failure**, so they work as CI gates.
 - **Token** — `--token` → `ADMIN_STATIC_TOKEN` → an HS256 JWT minted from
   `JWT_SECRET_KEY` with stdlib HMAC. A non-HS256 `JWT_ALGORITHM` is not
   supported by the minter; pass `--token` or set `ADMIN_STATIC_TOKEN`.
-- **Hermes / OpenClaw / goose URL** — `HERMES_API_URL` / `OPENCLAW_API_URL` /
-  `GOOSE_API_URL` are the *in-container* addresses (e.g. `http://hermes:8642`),
-  which the host cannot resolve. The helpers detect a bare service-name host and
-  swap in `127.0.0.1:$HERMES_GATEWAY_PORT` / `127.0.0.1:$OPENCLAW_PORT` /
-  `127.0.0.1:$GOOSE_PORT` for health checks. The goose probes send
-  `GOOSE_SECRET_KEY`. Actual A2A traffic still goes through the gateway.
+- **Hermes / OpenClaw / goose / omp URL** — `HERMES_API_URL` /
+  `OPENCLAW_API_URL` / `GOOSE_API_URL` / `OMP_API_URL` are the *in-container*
+  addresses (e.g. `http://hermes:8642`), which the host cannot resolve. The
+  helpers detect a bare service-name host and swap in
+  `127.0.0.1:$HERMES_GATEWAY_PORT` / `127.0.0.1:$OPENCLAW_PORT` /
+  `127.0.0.1:$GOOSE_PORT` / `127.0.0.1:$OMP_PORT` for health checks. The goose
+  probes send `GOOSE_SECRET_KEY`, the omp probes `OMP_SECRET_KEY`. Actual A2A
+  traffic still goes through the gateway.
 - **`.env` parsing** — the loader strips ` #` inline comments (unlike compose),
   so a mis-formatted line may work in the tests and still break the container.
 
@@ -1365,6 +1477,8 @@ make restart
 make hermes-up      /  make hermes-down
 make openclaw-up    /  make openclaw-down
 make goose-up       /  make goose-down
+make pi-up          /  make pi-down
+make omp-up         /  make omp-down
 make postgres-up    /  make postgres-down
 
 # Tail logs for one service:
@@ -1372,6 +1486,8 @@ docker compose logs -f a2a-gateway
 docker compose logs -f hermes
 docker compose logs -f openclaw
 docker compose logs -f goose
+docker compose logs -f pi
+docker compose logs -f omp
 docker compose logs -f postgres
 
 # Full clean rebuild (drops volumes + dangling images):
@@ -1444,6 +1560,17 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
   `GOOSE_SERVER__SECRET_KEY`. Use a long random secret, and drop the port
   mapping if nothing outside the compose network needs it. The secret is also
   stored in plain text in the `goose-data` volume (`server-secret.txt`).
+- **omp runs tools for real, and asks first.** With the default
+  `OMP_SIDE_APPROVAL_MODE=always-ask`, every gated tool call raises an approval
+  dialog that the bridge answers per `OMP_PERMISSION_MODE` — `auto_allow`
+  approves it. Its reach is the omp container plus `./www/omp-workspace`; keep
+  it that way (no extra host mounts). With `OMP_SIDE_APPROVAL_MODE=yolo` no
+  dialog is raised at all, so `OMP_PERMISSION_MODE` has no effect and every
+  tool (including `bash`, `eval` and the browser) runs unattended.
+- **omp publishes `3310` to the host**, protected only by
+  `OMP_SIDECAR_SECRET_KEY`. Use a long random secret, and drop the port
+  mapping if nothing outside the compose network needs it. The secret is also
+  stored in plain text in the `omp-data` volume (`server-secret.txt`).
 - **RLS is the tenant boundary.** A caller that can set an arbitrary `Part-Id`
   reads that partition's data — treat `Part-Id` as authorization-relevant input
   in any front-end you put in front of this.
@@ -1481,6 +1608,12 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 - **goose's ACP-over-HTTP transport is a draft.** The bridge is verified
   against goose 1.53.0 only; re-run `make goose-test` after bumping
   `GOOSE_VERSION`.
+- **omp: `OMP_PERMISSION_MODE=ask` needs a long-lived gateway process.** The
+  pending approval lives in the process holding the omp stream, so it does not
+  work under serverless dispatch.
+- **omp's bridge is verified against omp 18.18.2 only** (unit and executor
+  suites plus the O1 spike transcript). The live end-to-end run is still open —
+  re-run `make omp-test` after bumping `OMP_VERSION`.
 
 ---
 
@@ -1497,6 +1630,8 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | A2A tasks hang or error (OpenClaw) | Confirm OpenClaw is reachable (`OPENCLAW_API_URL`) and `OPENCLAW_API_KEY` matches its `gateway.auth.token` — see [Step 6](#step-6--openclaw-setup). |
 | goose task fails with "HTTP 401" / authentication | `GOOSE_SECRET_KEY` (gateway) ≠ `GOOSE_SERVER__SECRET_KEY` (goose). If you let goose generate it, read it with `docker exec container-goose cat /root/.config/goose/server-secret.txt`, set both vars, and recreate the gateway. |
 | goose replies are empty or the model errors | No provider configured: set `GOOSE_MODEL_PROVIDER` + its key before the **first** start, or run `docker exec -it container-goose goose configure`. Provider setup is skipped once `config.yaml` exists in `goose-data`. |
+| omp task fails with "HTTP 401" / authentication | `OMP_SECRET_KEY` (gateway) ≠ `OMP_SIDECAR_SECRET_KEY` (omp). If you let the sidecar generate it, read it with `docker exec container-omp cat /data/server-secret.txt`, set both vars, and recreate the gateway. |
+| omp replies are empty or the model errors | No provider configured: set `OMP_COMPAT_BASE_URL` / `OMP_COMPAT_API_KEY` / `OMP_COMPAT_MODEL` (or omp's own provider keys) before the **first** start, and check `OMP_SIDE_MODEL`. |
 | A turn starts a new conversation | Send back the previous reply's `contextId` (or the same `metadata.thread_uuid`) and keep the same `Part-Id`; for goose, also check the `goose-share` volume was not reset. Needs an `a2a_protocol_plugin` build with the conversation-key fix (rebuild with a new `MODULE_STAMP`). |
 | Hermes/OpenClaw auth fails for no visible reason | An inline `#` comment in `.env` was absorbed into the value. Put comments on their own line. |
 | SSE connects but no chunks arrive | Send with `"stream": true`, connect the listener *before* sending, and check `A2A_STREAMING_ENABLED=true`. |
@@ -1506,10 +1641,11 @@ docker compose up -d          # initialize_tables=1 recreates tables + RLS
 | Bundled Hermes not starting | Ensure `COMPOSE_PROFILES` includes `hermes`, and that `www/hermes` + `www/projects` exist. |
 | Bundled OpenClaw not starting | Ensure `COMPOSE_PROFILES` includes `openclaw`, and that `www/openclaw` + `www/projects` exist. |
 | Bundled Postgres not starting | Ensure `COMPOSE_PROFILES` includes `postgres` and `PG_HOST=postgres`. |
-| Gateway can't reach `postgres` / `hermes` / `openclaw` / `goose` / `pi` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` / `GOOSE_API_URL` / `PI_API_URL` at `host.docker.internal` or a real host. |
-| Test script can't resolve host `hermes` / `openclaw` / `goose` | Expected — pass `--hermes-url http://127.0.0.1:8642` / `--openclaw-url http://127.0.0.1:18789` / `--goose-url http://127.0.0.1:3284`, or let the helper auto-swap in the host-published port. |
+| Bundled pi / omp not starting | Ensure `COMPOSE_PROFILES` includes `pi` (or `omp`), and that `www/pi-workspace` (or `www/omp-workspace`) exists. Both share the `./pi` image — the `omp` profile builds the variant with `AGENT_DIALECT=omp`. |
+| Gateway can't reach `postgres` / `hermes` / `openclaw` / `goose` / `pi` / `omp` by name | Those hostnames only resolve when the matching profile is active. Otherwise point `PG_HOST` / `HERMES_API_URL` / `OPENCLAW_API_URL` / `GOOSE_API_URL` / `PI_API_URL` / `OMP_API_URL` at `host.docker.internal` or a real host. |
+| Test script can't resolve host `hermes` / `openclaw` / `goose` / `omp` | Expected — pass `--hermes-url http://127.0.0.1:8642` / `--openclaw-url http://127.0.0.1:18789` / `--goose-url http://127.0.0.1:3284` / `--omp-url http://127.0.0.1:3310`, or let the helper auto-swap in the host-published port. |
 | `relation "a2a_tasks" does not exist` | Set `initialize_tables=1` and restart the gateway. |
-| Port already in use | Change `CONTAINER_PORT` (gateway), `HERMES_GATEWAY_PORT` / `HERMES_DASHBOARD_PORT` (hermes), `OPENCLAW_PORT` (openclaw), `GOOSE_PORT` (goose), or `POSTGRES_PORT` in `.env`. |
+| Port already in use | Change `CONTAINER_PORT` (gateway), `HERMES_GATEWAY_PORT` / `HERMES_DASHBOARD_PORT` (hermes), `OPENCLAW_PORT` (openclaw), `GOOSE_PORT` (goose), `PI_PORT` (pi), `OMP_PORT` (omp), or `POSTGRES_PORT` in `.env`. |
 | Route changes not taking effect | `routes.yaml` is bind-mounted read-only; edit the host file and restart the gateway process (no rebuild). |
 | Addon module doesn't register | Check `docker exec a2a-gateway cat /var/log/supervisor/silvaengine-gateway.log` — a module or route that can't import is logged and skipped, not fatal. Confirm the file is under `./addons/`, ends in `.yaml`/`.yml`, and doesn't end in `.example`/`.disabled`/`.bak`. |
 

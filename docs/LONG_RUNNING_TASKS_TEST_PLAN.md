@@ -1,6 +1,13 @@
 # Long-Running A2A Tasks: Docker Gateway Test Plan
 
-Updated: 2026-11-10. Status: proposed; test-script changes are not implemented.
+Updated: 2026-11-10. Status: **harness and runner implemented** on branch
+`feature/long-running-tasks` (the shared long-running harness in
+`tests/a2a_test_utils.py`, its 57 offline tests, the bounded runner
+`scripts/run_long_running_tests.py` and the live scenarios in
+`tests/long_running/`). The measured state, the live findings and the
+scenario-by-scenario coverage are recorded in
+`docs/LONG_RUNNING_TASKS_CERTIFICATION.md` — a requirement that the current
+build does not implement is reported as unmet, never as a pass.
 Owner: docker-a2a-gateway maintainers, coordinated with a2a_protocol_plugin and silvaengine_gateway maintainers.
 
 ## Purpose and scope

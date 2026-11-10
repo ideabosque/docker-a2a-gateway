@@ -29,8 +29,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-# Generated test reports and execution evidence.
-/docs/test_results/
+# Generated test reports and execution evidence. The report *shape*
+# documentation of the long-running task suite is tracked; the generated
+# reports stay ignored (they are local execution evidence).
+/docs/test_results/*
+!/docs/test_results/long_running_tasks/
+/docs/test_results/long_running_tasks/*
+!/docs/test_results/long_running_tasks/README.md
 
 # Operator-owned composition of project deployments.
 /compose.projects.local.yaml

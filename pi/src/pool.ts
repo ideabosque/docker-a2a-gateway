@@ -18,13 +18,14 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { createDialect, type AgentDialect } from "./dialect.js";
 import { type JsonRecord, PiRpc, type RpcResponse } from "./rpc.js";
 
 export interface CreateOptions {
 	cwd?: string;
-	/** "provider/modelId" â€” split on the first "/" into --provider/--model. */
+	/** "provider/modelId" — split on the first "/" into --provider/--model. */
 	model?: string;
-	/** pi thinking level: off â€¦ max. */
+	/** Thinking level: off … max (per dialect). */
 	thinking?: string;
 }
 
@@ -42,6 +43,12 @@ export interface PoolInit {
 	onStderr?: (sessionId: string, line: string) => void;
 	onExit?: (sessionId: string, code: number | null, signal: string | null) => void;
 	logger?: (level: "info" | "warn" | "error", message: string) => void;
+	/** Protocol dialect of the spawned agent. Default: pi. */
+	dialect?: AgentDialect;
+	/** Model used when a session does not ask for one (per dialect). */
+	defaultModel?: string;
+	/** Thinking level used when a session does not ask for one. */
+	defaultThinking?: string;
 }
 
 export class PoolError extends Error {
@@ -82,6 +89,11 @@ export class SessionPool {
 		}
 	}
 
+	/** The protocol dialect of the spawned agent. */
+	get dialect(): AgentDialect {
+		return this.init.dialect ?? createDialect("pi");
+	}
+
 	get activeCount(): number {
 		return this.sessions.size;
 	}
@@ -108,8 +120,8 @@ export class SessionPool {
 		// all pass the cap while their subprocesses are still starting.
 		if (this.sessions.size + this.creating >= this.init.maxProcesses) {
 			throw new PoolError(
-				`pi sidecar at the process cap (${this.init.maxProcesses}); ` +
-					"close sessions or raise PI_MAX_PROCESSES",
+				`${this.dialect.name} sidecar at the process cap (${this.init.maxProcesses}); ` +
+					`close sessions or raise ${this.dialect.envPrefix}_MAX_PROCESSES`,
 				503,
 			);
 		}
@@ -118,19 +130,13 @@ export class SessionPool {
 		try {
 			const cwd = opts.cwd || this.init.defaultCwd;
 			const args = [...this.init.baseArgs];
-			const model = opts.model || undefined;
-			if (model) {
-				const slash = model.indexOf("/");
-				if (slash > 0) {
-					args.push("--provider", model.slice(0, slash), "--model", model.slice(slash + 1));
-				} else {
-					args.push("--model", model);
-				}
-			}
-			if (opts.thinking) args.push("--thinking", opts.thinking);
+			const model = opts.model || this.init.defaultModel || undefined;
+			const thinking = opts.thinking || this.init.defaultThinking || undefined;
+			args.push(...this.dialect.spawnFlags({ model, thinking }));
 			args.push("--session-dir", this.init.sessionDir);
 
-			// Wait for pi to be ready (the RPC runtime answers commands when up).
+			// Wait for the agent to be ready (the RPC runtime answers commands
+			// when up; the omp dialect waits for its `ready` frame).
 			rpc = await this.spawn(cwd, args);
 			if (resumeFile) {
 				const resp = await rpc.request({ type: "switch_session", sessionPath: resumeFile });
@@ -141,15 +147,24 @@ export class SessionPool {
 			}
 			const state = await rpc.getState();
 			const id = String(state["sessionId"] ?? `session-${Date.now()}`);
+			const sessionFile = state["sessionFile"] ? String(state["sessionFile"]) : null;
+			// A lease-fork moves the session to a new file: the index must
+			// follow it, or the next resume would re-open the stale file.
+			if (resumeFile && sessionFile && sessionFile !== resumeFile) {
+				this.log(
+					"warn",
+					`session ${id} moved to ${sessionFile} (was ${resumeFile})`,
+				);
+			}
 			const session: PoolSession = {
 				id,
-				sessionFile: state["sessionFile"] ? String(state["sessionFile"]) : null,
+				sessionFile,
 				cwd,
 				rpc,
 				streaming: Boolean(state["isStreaming"]),
 				lastUsed: Date.now(),
-				...(opts.model ? { model: opts.model } : {}),
-				...(opts.thinking ? { thinking: opts.thinking } : {}),
+				...(model ? { model } : {}),
+				...(thinking ? { thinking } : {}),
 			};
 			this.sessions.set(id, session);
 			this.log("info", `session ${id} live (${resumeFile ? "resumed" : "new"}) file=${session.sessionFile}`);
@@ -184,7 +199,13 @@ export class SessionPool {
 		);
 		this.resuming.set(id, pending);
 		try {
-			return await pending;
+			const session = await pending;
+			if (session.id !== id) {
+				// The resume forked the session onto a new file (and id): the
+				// stale index entry would point at the pre-fork file.
+				await this.forget(id);
+			}
+			return session;
 		} finally {
 			this.resuming.delete(id);
 		}
@@ -257,6 +278,21 @@ export class SessionPool {
 		}
 	}
 
+	/** Drop a stale index entry (a forked session replaced it). */
+	private async forget(id: string): Promise<void> {
+		const index = await this.indexer;
+		if (!(id in index)) return;
+		delete index[id];
+		try {
+			await writeFile(
+				path.join(this.init.dataDir, "sessions-index.json"),
+				JSON.stringify({ version: 1, sessions: index }, null, 2),
+			);
+		} catch (err) {
+			this.log("warn", `index persistence failed: ${err}`);
+		}
+	}
+
 	private async loadIndex(): Promise<
 		Record<string, { sessionFile: string; cwd: string; model?: string; thinking?: string }>
 	> {
@@ -298,7 +334,8 @@ export class SessionPool {
 		const rpc = new PiRpc({
 			command: args,
 			cwd,
-			env: { ...spawnEnvClean(), ...(this.init.env ?? {}) },
+			dialect: this.dialect,
+			env: { ...spawnEnvClean(this.dialect.childEnvBlocked), ...(this.init.env ?? {}) },
 			onEvent: (event) => this.init.onEvent?.(id, event),
 			onStderr: (line) => this.init.onStderr?.(id, line),
 			onExit: (code, signal) => {
@@ -332,27 +369,21 @@ export class SessionPool {
 }
 
 /**
- * The pi child inherits the sidecar's environment MINUS the variables pi
- * itself exports/uses for its own tool shells (PI_MODEL / PI_PROVIDER /
+ * The agent child inherits the sidecar's environment MINUS the variables the
+ * agent itself exports/uses for its own tool shells (PI_MODEL / PI_PROVIDER /
  * PI_THINKING / PI_TOOLS). P1 spike (2026-10-25): on dev hosts those names
  * hold the operator's local pi state (e.g. PI_PROVIDER=ollama-cloud), and a
  * naive env passthrough made model-less sessions boot with a provider pi
  * rejects ("Unknown provider"). Provider credentials and the PI_COMPAT_*
  * interpolation targets are preserved.
  */
-export function spawnEnvClean(): Record<string, string | undefined> {
-	const blocked = new Set([
-		"PI_MODEL",
-		"PI_PROVIDER",
-		"PI_THINKING",
-		"PI_TOOLS",
-		"PI_EXTRA_ARGS",
-		"PI_APPROVE",
-	]);
+export function spawnEnvClean(
+	blockedNames: readonly string[] = createDialect("pi").childEnvBlocked,
+): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = { ...process.env };
 	// Explicit undefined overrides PiRpc's process.env merge; deleting keys
 	// here would let the original host values back into the child.
-	for (const key of blocked) env[key] = undefined;
+	for (const key of blockedNames) env[key] = undefined;
 	return env;
 }
 

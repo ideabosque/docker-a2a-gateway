@@ -26,6 +26,8 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
+import { createDialect, type AgentDialect } from "./dialect.js";
+
 export type JsonRecord = Record<string, unknown>;
 
 export interface RpcResponse {
@@ -61,6 +63,8 @@ export interface RpcOptions {
 	onStderr?: (chunk: string) => void;
 	/** Called once when the process exits (code/signal or spawn error). */
 	onExit?: (code: number | null, signal: string | null, err?: Error) => void;
+	/** Protocol dialect of the spawned agent. Default: pi. */
+	dialect?: AgentDialect;
 }
 
 export class RpcClosedError extends Error {
@@ -77,9 +81,25 @@ interface Pending {
 	command: string;
 }
 
+/** A partially received `rpc_chunk` sequence (protocol v2). */
+interface ChunkSequence {
+	chunkId: string;
+	count: number;
+	byteLength: number;
+	segments: Map<number, Buffer>;
+	bytes: number;
+}
+
+/** How long the agent may take to emit its `ready` frame (ms). */
+const READY_TIMEOUT_MS = 30_000;
+
+/** Reassembly limit used until the `ready` frame advertises its own. */
+const DEFAULT_MAX_REASSEMBLED_BYTES = 64 * 1024 * 1024;
+
 export class PiRpc {
 	readonly connectionId = `a2a-${randomUUID()}`;
 	private readonly opts: RpcOptions;
+	private readonly dialect: AgentDialect;
 	private child: ChildProcessWithoutNullStreams | null = null;
 	private readonly decoder = new StringDecoder("utf-8");
 	private lineBuf = "";
@@ -90,14 +110,31 @@ export class PiRpc {
 	private stopRequested = false;
 	private exitError: Error | null = null;
 	private _stderrTail = "";
+	private _readyFrame: JsonRecord | null = null;
+	private readyWaiter: { resolve: () => void; reject: (error: Error) => void } | null = null;
+	private chunkSequence: ChunkSequence | null = null;
 
 	constructor(opts: RpcOptions) {
 		this.opts = opts;
+		this.dialect = opts.dialect ?? createDialect("pi");
 	}
 
 	/** Whether the child is running. */
 	get alive(): boolean {
 		return this.child !== null && this.child.exitCode === null && !this.exited;
+	}
+
+	/** The agent's `ready` frame (null until it arrives). */
+	get readyFrame(): JsonRecord | null {
+		return this._readyFrame;
+	}
+
+	/** Reassembly limit advertised by the `ready` frame (bytes). */
+	get maxReassembledFrameBytes(): number {
+		const advertised = Number(this._readyFrame?.["maxReassembledFrameBytes"]);
+		return Number.isFinite(advertised) && advertised > 0
+			? advertised
+			: DEFAULT_MAX_REASSEMBLED_BYTES;
 	}
 
 	/** Last stderr chunk (for diagnostics in errors); truncated tail. */
@@ -134,6 +171,7 @@ export class PiRpc {
 				this.exited = true;
 				this.exitError = err instanceof Error ? err : new Error(String(err));
 				this.failAllPending(this.exitError);
+				this.failReady(this.exitError);
 				this.opts.onExit?.(null, null, this.exitError);
 				if (!this.stopRequested) reject(this.exitError);
 			});
@@ -148,6 +186,7 @@ export class PiRpc {
 									`Stderr: ${this.stderrTail}`,
 							));
 				if (err) this.failAllPending(err);
+				this.failReady(err ?? new RpcClosedError("pi RPC process exited"));
 				this.opts.onExit?.(code, signal, err ?? undefined);
 				if (!this.stopRequested) {
 					reject(err ?? new RpcClosedError("pi RPC process exited"));
@@ -155,10 +194,30 @@ export class PiRpc {
 				}
 			});
 
+		if (!this.dialect.needsReadyHandshake) {
 			// The spawn itself succeeds unless the executable is missing; those
 			// failures surface via "error"/"close" above.
 			resolve();
-		});
+			return;
+		}
+
+		// The agent gates every command behind its `ready` frame.
+		const timer = setTimeout(() => {
+			this.failReady(
+				new Error(`${this.dialect.name} did not emit a ready frame within 30s`),
+			);
+		}, READY_TIMEOUT_MS);
+		this.readyWaiter = {
+			resolve: () => {
+				clearTimeout(timer);
+				resolve();
+			},
+			reject: (error: Error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		};
+	});
 	}
 
 	/** Subscribe to session events; returns an unsubscribe function. */
@@ -274,6 +333,24 @@ export class PiRpc {
 		} catch {
 			return; // non-JSON stdout noise — ignore (pi keeps stdout protocol-clean)
 		}
+		if (this.dialect.supportsChunkReassembly && data["type"] === "rpc_chunk") {
+			this.handleChunk(data);
+			return;
+		}
+		this.dispatch(data);
+	}
+
+	/** Route one protocol record (parsed line or reassembled frame). */
+	private dispatch(data: JsonRecord): void {
+		if (data["type"] === "ready") {
+			this._readyFrame = data;
+			const waiter = this.readyWaiter;
+			this.readyWaiter = null;
+			if (waiter) {
+				waiter.resolve();
+				void this.afterReady();
+			}
+		}
 		if (data["type"] === "response" && typeof data["id"] === "string") {
 			const pending = this.pending.get(data["id"]);
 			if (pending) {
@@ -324,6 +401,136 @@ export class PiRpc {
 `);
 			}
 		}
+	}
+
+	/**
+	 * Commands sent right after the `ready` frame: the protocol v2
+	 * negotiation (omp splits oversized frames into `rpc_chunk` sequences
+	 * only in v2) and the subagent subscription (the sidecar does not render
+	 * subagent frames).
+	 */
+	private async afterReady(): Promise<void> {
+		if (this.dialect.negotiatesProtocolV2) {
+			try {
+				const response = await this.request(
+					{ id: "protocol-2", type: "negotiate_protocol", protocolVersion: 2 },
+					10_000,
+				);
+				if (response.success === false) {
+					this.opts.onStderr?.(
+						`[${this.dialect.name}] protocol v2 negotiation refused ` +
+							`(${String(response.error ?? "unknown error")}); continuing on v1\n`,
+					);
+				}
+			} catch (err) {
+				this.opts.onStderr?.(
+					`[${this.dialect.name}] protocol v2 negotiation failed: ${err}\n`,
+				);
+			}
+			try {
+				await this.request({ type: "set_subagent_subscription", level: "off" }, 10_000);
+			} catch {
+				/* optional command — older agents answer "unknown command" */
+			}
+		}
+	}
+
+	/**
+	 * Reassemble a `rpc_chunk` sequence (protocol v2). The chunks of one
+	 * sequence arrive uninterrupted and in order; a gap, an interleaved
+	 * sequence or a frame above the advertised limit discards the sequence.
+	 */
+	private handleChunk(record: JsonRecord): void {
+		const chunkId = typeof record["chunkId"] === "string" ? record["chunkId"] : "";
+		const index = Number(record["index"]);
+		const count = Number(record["count"]);
+		const byteLength = Number(record["byteLength"]);
+		const segment =
+			typeof record["data"] === "string" ? Buffer.from(record["data"], "base64") : null;
+		if (
+			!chunkId ||
+			segment === null ||
+			!Number.isInteger(index) ||
+			!Number.isInteger(count) ||
+			count <= 0 ||
+			index < 0 ||
+			index >= count
+		) {
+			this.chunkSequence = null;
+			this.emitFrameError("malformed rpc_chunk frame");
+			return;
+		}
+		if (!this.chunkSequence || this.chunkSequence.chunkId !== chunkId) {
+			// A new sequence interrupts the previous one.
+			this.discardChunkSequence("interrupted rpc_chunk sequence");
+			this.chunkSequence = { chunkId, count, byteLength, segments: new Map(), bytes: 0 };
+		}
+		const sequence = this.chunkSequence;
+		if (sequence.count !== count) {
+			this.discardChunkSequence("rpc_chunk sequence changed its chunk count");
+			return;
+		}
+		if (index !== sequence.segments.size) {
+			this.discardChunkSequence("rpc_chunk sequence has a gap");
+			return;
+		}
+		sequence.segments.set(index, segment);
+		sequence.bytes += segment.length;
+		const limit = this.maxReassembledFrameBytes;
+		if (sequence.bytes > limit || (byteLength > 0 && byteLength > limit)) {
+			this.discardChunkSequence("frame exceeded maxReassembledFrameBytes");
+			return;
+		}
+		if (sequence.segments.size < sequence.count) return;
+
+		const parts = [...sequence.segments.entries()]
+			.sort((a, b) => a[0] - b[0])
+			.map(([, buffer]) => buffer);
+		const total = Buffer.concat(parts);
+		this.chunkSequence = null;
+		const declared = sequence.byteLength;
+		if (
+			declared > 0 &&
+			total.length !== declared &&
+			!parts.some((part) => part.length === declared)
+		) {
+			this.emitFrameError("reassembled frame length mismatch");
+			return;
+		}
+		let text: string;
+		try {
+			text = new TextDecoder("utf-8", { fatal: true }).decode(total);
+		} catch {
+			this.emitFrameError("reassembled frame is not valid UTF-8");
+			return;
+		}
+		let parsed: JsonRecord;
+		try {
+			parsed = JSON.parse(text) as JsonRecord;
+		} catch {
+			this.emitFrameError("reassembled frame is not valid JSON");
+			return;
+		}
+		this.dispatch(parsed);
+	}
+
+	/** Drop the pending chunk sequence and report why. */
+	private discardChunkSequence(reason: string): void {
+		const had = this.chunkSequence !== null;
+		this.chunkSequence = null;
+		if (had) this.emitFrameError(reason);
+	}
+
+	/** Surface a transport-level frame error as a session event. */
+	private emitFrameError(error: string): void {
+		this.dispatch({ type: "rpc_frame_error", error });
+	}
+
+	/** Reject the pending `ready` handshake (process died / timed out). */
+	private failReady(error: Error): void {
+		const waiter = this.readyWaiter;
+		this.readyWaiter = null;
+		if (waiter) waiter.reject(error);
 	}
 
 	private failAllPending(error: Error): void {

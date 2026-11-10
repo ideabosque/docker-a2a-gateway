@@ -21,6 +21,8 @@ Generated (random, only when not already set):
   API_SERVER_KEY (= HERMES_API_KEY),
   OPENCLAW_GATEWAY_TOKEN (= OPENCLAW_API_KEY),
   GOOSE_SERVER__SECRET_KEY (= GOOSE_SECRET_KEY),
+  PI_SIDECAR_SECRET_KEY (= PI_SECRET_KEY),
+  OMP_SIDECAR_SECRET_KEY (= OMP_SECRET_KEY),
   PG_PASSWORD (also bootstraps the bundled postgres service directly — see
   docker-compose.yml; there is no separate POSTGRES_PASSWORD to alias),
   HERMES_DASHBOARD_BASIC_AUTH_PASSWORD, HERMES_DASHBOARD_BASIC_AUTH_SECRET
@@ -28,7 +30,7 @@ Generated (random, only when not already set):
 Port offsets (+10 from .env.example defaults to avoid sibling conflicts,
 only applied when the var isn't already set):
   CONTAINER_PORT, POSTGRES_PORT, HERMES_GATEWAY_PORT,
-  HERMES_DASHBOARD_PORT, OPENCLAW_PORT, GOOSE_PORT
+  HERMES_DASHBOARD_PORT, OPENCLAW_PORT, GOOSE_PORT, PI_PORT, OMP_PORT
 
 CLI overrides (always win, even over an already-set value):
   --openai-compat-api-key / --openai-compat-base-url / --openai-compat-model
@@ -71,6 +73,7 @@ RANDOM_VARS = [
     "OPENCLAW_GATEWAY_TOKEN",
     "GOOSE_SERVER__SECRET_KEY",
     "PI_SIDECAR_SECRET_KEY",
+    "OMP_SIDECAR_SECRET_KEY",
     "PG_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
@@ -84,6 +87,8 @@ ALIAS_MAP = {
     "GOOSE_SECRET_KEY": "GOOSE_SERVER__SECRET_KEY",
     # The pi sidecar rejects every request whose X-Secret-Key differs.
     "PI_SECRET_KEY": "PI_SIDECAR_SECRET_KEY",
+    # The omp sidecar rejects every request whose X-Secret-Key differs.
+    "OMP_SECRET_KEY": "OMP_SIDECAR_SECRET_KEY",
 }
 
 # Host-published ports to offset (var -> .env.example default), only when not already set
@@ -95,6 +100,7 @@ PORT_VARS = {
     "OPENCLAW_PORT": 18789,
     "GOOSE_PORT": 3284,
     "PI_PORT": 3300,
+    "OMP_PORT": 3310,
 }
 
 # CLI flag -> env var name, for values that should always override (even an

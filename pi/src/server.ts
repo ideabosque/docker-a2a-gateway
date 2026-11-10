@@ -25,6 +25,7 @@
 
 import http from "node:http";
 
+import { createDialect, type AgentDialect } from "./dialect.js";
 import { type JsonRecord, PiRpc, RpcClosedError } from "./rpc.js";
 import {
 	type CreateOptions,
@@ -43,6 +44,8 @@ export interface ServerOptions {
 	/** Max request body size (bytes) — base64 images ride the prompt body. */
 	maxBodyBytes: number;
 	log: (level: "info" | "warn" | "error", message: string) => void;
+	/** Protocol dialect of the driven agent. Default: pi. */
+	dialect?: AgentDialect;
 }
 
 /** Grace after agent_settled before declaring the run end (ms). */
@@ -51,6 +54,9 @@ const SETTLE_GRACE_MS = 250;
 const MAX_SETTLE_POLLS = 20;
 
 export function createServer(opts: ServerOptions): http.Server {
+	const dialect = opts.dialect ?? createDialect("pi");
+	// Command id of the current prompt (omp echoes it in `prompt_result`).
+	let promptSeq = 0;
 	const json = (res: http.ServerResponse, status: number, body: unknown): void => {
 		res.writeHead(status, { "content-type": "application/json" });
 		res.end(JSON.stringify(body));
@@ -143,12 +149,12 @@ export function createServer(opts: ServerOptions): http.Server {
 		};
 
 		let lastUsage: unknown = undefined;
-		// Capture settlement before sending the command: pi may emit the
-		// response and all run events in one stdout read, before request()
-		// resumes and waitForSettle installs its waiter.
-		const settledEvents: JsonRecord[] = [];
+		// Capture the completion frame before sending the command: the agent
+		// may emit the response and all run events in one stdout read, before
+		// request() resumes and the waiter installs its listener.
+		const completionEvents: JsonRecord[] = [];
 		const usageUnsubscribe = rpc.addEventListener((event) => {
-			if (event["type"] === "agent_settled") settledEvents.push(event);
+			if (event["type"] === dialect.completion) completionEvents.push(event);
 			if (event["type"] === "message_update" && event["usage"] !== undefined) {
 				lastUsage = event["usage"];
 			}
@@ -163,9 +169,9 @@ export function createServer(opts: ServerOptions): http.Server {
 					await safeAbort(rpc);
 					return { aborted: true, timedOut: true };
 				}
-				// Wait for agent_settled, racing the run deadline.
+				// Wait for the settle frame, racing the run deadline.
 				const settled = await new Promise<{ aborted: boolean; timedOut: boolean }>((resolve) => {
-					const queued = settledEvents.shift();
+					const queued = completionEvents.shift();
 					if (queued) {
 						resolve({ aborted: queued["aborted"] === true, timedOut: false });
 						return;
@@ -180,8 +186,8 @@ export function createServer(opts: ServerOptions): http.Server {
 						resolve(result);
 					};
 					const unsubscribeSettled = rpc.addEventListener((event) => {
-						if (event["type"] === "agent_settled") {
-							settledEvents.shift();
+						if (event["type"] === dialect.completion) {
+							completionEvents.shift();
 							finish({ aborted: event["aborted"] === true, timedOut: false });
 						}
 					});
@@ -214,6 +220,74 @@ export function createServer(opts: ServerOptions): http.Server {
 			return { aborted: false, timedOut: false };
 		};
 
+		/**
+		 * omp ends a run with the `prompt_result` frame that echoes the
+		 * prompt's command id. A result that does not report a settled
+		 * session keeps the run window open until the session is quiescent.
+		 */
+		const waitForPromptResult = async (
+			promptId: string,
+		): Promise<{ status: string; error?: string; timedOut?: boolean }> => {
+			const takeResult = (): JsonRecord | undefined => {
+				const index = completionEvents.findIndex((event) => event["id"] === promptId);
+				if (index < 0) return undefined;
+				return completionEvents.splice(index, 1)[0];
+			};
+			const result = await new Promise<JsonRecord | null>((resolve) => {
+				const queued = takeResult();
+				if (queued) {
+					resolve(queued);
+					return;
+				}
+				let done = false;
+				let timer: NodeJS.Timeout | undefined;
+				const finish = (value: JsonRecord | null): void => {
+					if (done) return;
+					done = true;
+					clearTimeout(timer);
+					unsubscribeResult();
+					resolve(value);
+				};
+				const unsubscribeResult = rpc.addEventListener((event) => {
+					if (event["type"] !== dialect.completion) return;
+					if (event["id"] !== promptId) return;
+					finish(event);
+				});
+				const checkDeadline = (): void => {
+					if (done) return;
+					if (deadline !== 0 && Date.now() > deadline) {
+						finish(null);
+						return;
+					}
+					timer = setTimeout(checkDeadline, 1000);
+				};
+				timer = setTimeout(checkDeadline, 1000);
+			});
+			if (!result) {
+				await safeAbort(rpc);
+				return { status: "timeout", timedOut: true };
+			}
+			const status = String(result["status"] ?? "completed");
+			const failure = result["error"] as Record<string, unknown> | undefined;
+			const message = failure?.["message"];
+			const error = typeof message === "string" ? message : undefined;
+			// The window stays open until the SESSION is quiescent, not until
+			// this prompt yielded: a steer/follow-up prompted during the run
+			// starts its own turn after this yield, and that answer has to
+			// reach the caller that owns the run window. `get_state.isSettled`
+			// is false while such work is queued.
+			for (let poll = 0; poll < MAX_SETTLE_POLLS; poll++) {
+				const state = await rpc
+					.getState()
+					.catch(() => ({}) as Record<string, unknown>);
+				if (state["isSettled"] === true) return { status, error };
+				if (deadline !== 0 && Date.now() > deadline) break;
+				await new Promise((r) => setTimeout(r, 1000));
+			}
+			await safeAbort(rpc);
+			return { status: "timeout", timedOut: true };
+		};
+
 		const runEnd: Record<string, unknown> = {
 			type: "run_end",
 			sessionId: session.id,
@@ -221,21 +295,40 @@ export function createServer(opts: ServerOptions): http.Server {
 			aborted: false,
 		};
 		try {
+			// omp correlates the run with the prompt's command id (its
+			// `prompt_result` frame echoes it); pi does not need one.
+			const promptId =
+				dialect.completion === "prompt_result" ? `prompt-${++promptSeq}` : undefined;
 			const response = await rpc.request(
 				{
 					type: "prompt",
 					message,
 					...(images ? { images } : {}),
 					...(streamingBehavior ? { streamingBehavior } : {}),
+					...(promptId ? { id: promptId } : {}),
 				},
 				60_000,
 			);
 			const data = (response.data ?? {}) as Record<string, unknown>;
-			const disposition = String(data["disposition"] ?? "started");
-			if (disposition === "handled") {
+			const handled =
+				dialect.handledSignal === "disposition"
+					? String(data["disposition"] ?? "started") === "handled"
+					: data["agentInvoked"] === false;
+			if (handled) {
 				// No run started (extension command / input handler): nothing to
-				// wait for — no agent_settled follows (docs/rpc.md).
+				// wait for — no completion frame follows (docs/rpc.md).
 				runEnd["stopReason"] = "handled";
+			} else if (promptId) {
+				const outcome = await waitForPromptResult(promptId);
+				runEnd["aborted"] = outcome.status === "aborted";
+				runEnd["stopReason"] = outcome.timedOut
+					? "timeout"
+					: outcome.status === "aborted"
+						? "aborted"
+						: outcome.status === "error"
+							? "error"
+							: "end_turn";
+				if (outcome.error) runEnd["error"] = outcome.error;
 			} else {
 				const settled = await waitForSettle();
 				runEnd["aborted"] = settled.aborted;
@@ -271,7 +364,8 @@ export function createServer(opts: ServerOptions): http.Server {
 			if (req.method === "GET" && path === "/health") {
 				json(res, 200, {
 					status: "ok",
-					pi: opts.piVersion,
+					dialect: dialect.name,
+					[dialect.name]: opts.piVersion,
 					sessions: { active: opts.pool.activeCount },
 				});
 				return;
@@ -367,12 +461,14 @@ export function createServer(opts: ServerOptions): http.Server {
 							return;
 						}
 						await session.rpc.request(
-							{
-								...(behavior === "steer"
-									? { type: "steer" }
-									: { type: "follow_up" }),
-								message,
-							},
+							dialect.completion === "prompt_result"
+								? { type: "prompt", message, streamingBehavior: behavior }
+								: {
+										...(behavior === "steer"
+											? { type: "steer" }
+											: { type: "follow_up" }),
+										message,
+									},
 							60_000,
 						);
 						json(res, 200, { disposition: behavior });

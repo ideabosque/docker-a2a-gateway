@@ -8,7 +8,7 @@
 # gateway image is identical either way; only which sibling agent(s) you
 # bundle changes.
 #
-# Four services:
+# Six services:
 #   - a2a-gateway (always on)  — the SilvaEngine Gateway, A2A-only routes.
 #   - postgres    (optional)   — PostgreSQL persistence backend. Enabled via
 #                                the `postgres` compose profile.
@@ -24,6 +24,11 @@
 #                                stdin/stdout JSONL (pi has no network server;
 #                                see ./pi/README.md). Enabled via the `pi`
 #                                compose profile.
+#   - omp          (optional)   — omp (oh-my-pi, coding agent) via the SAME
+#                                Node sidecar as pi, in its `omp` dialect:
+#                                it drives `omp --mode rpc` child processes
+#                                over stdin/stdout JSONL. Enabled via the
+#                                `omp` compose profile.
 #
 # `hermes` and `openclaw` are independent options: enable one, the other,
 # both, or neither (and point *_API_URL at an external instance instead).
@@ -91,6 +96,9 @@ services:
         condition: service_started
         required: false
       pi:
+        condition: service_started
+        required: false
+      omp:
         condition: service_started
         required: false
     restart: unless-stopped
@@ -489,11 +497,109 @@ services:
       retries: 3
       start_period: 20s
 
+  # ── Option F: omp Agent (optional sibling — enable with the `omp` profile)
+  # omp (oh-my-pi) is a terminal coding agent with NO network server. This
+  # sibling bundles the SAME Node sidecar as ./pi, but in its `omp` dialect:
+  # it spawns `omp --mode rpc` child processes over stdin/stdout JSONL (the
+  # official omp RPC protocol) and exposes HTTP + SSE. The gateway's
+  # OmpAgentHandler (a2a_protocol_plugin) bridges A2A tasks to it at
+  # http://omp:3310 while this profile is active (OMP_API_URL).
+  # omp gates its tools NATIVELY (--approval-mode always-ask), so the
+  # approval dialogs ride the same extension_ui_request channel the pi
+  # bridge uses — the omp container is the security boundary.
+  omp:
+    build:
+      context: ./pi
+      dockerfile: Dockerfile
+      args:
+        # Which dialect the sidecar speaks (pi | omp) — the image installs
+        # the pi CLI for `pi` and the standalone omp binary for `omp`.
+        AGENT_DIALECT: omp
+        # Pinned standalone omp release; the build verifies its SHA-256
+        # against the release's SHA256SUMS.txt.
+        OMP_VERSION: ${OMP_VERSION:-18.18.2}
+    container_name: ${OMP_CONTAINER_NAME:-container-omp}
+    profiles: ["omp"]
+    env_file:
+      - .env
+    ports:
+      - "${OMP_PORT:-3310}:3310"
+    volumes:
+      # The omp agent's default working directory (OMP_CWD=/workspace). omp
+      # tools run with the container's privileges; do not add broader host
+      # mounts.
+      - ${OMP_WORKSPACE_FOLDER:-./www/omp-workspace}:/workspace
+      # Shared projects folder (same PROJECTS_FOLDER as goose/hermes/openclaw).
+      - ${PROJECTS_FOLDER:-./www/projects}:/workspace/projects
+      # Sidecar state: server-secret.txt, omp session files
+      # (--session-dir /data/sessions) and sessions-index.json so sessions
+      # survive sidecar restarts and can be re-opened transparently.
+      - ${OMP_DATA_FOLDER:-omp-data}:/data
+      # omp user config (models.yml for custom OpenAI-compatible endpoints).
+      # First start writes models.yml when OMP_COMPAT_BASE_URL is set.
+      - ${OMP_AGENT_DIR_FOLDER:-omp-agent}:/root/.omp/agent
+    environment:
+      # Which dialect the sidecar speaks. `pi` (default) drives `pi --mode rpc`;
+      # `omp` drives `omp --mode rpc` (ready handshake, protocol v2 chunks,
+      # prompt_result completion).
+      - AGENT_DIALECT=omp
+      # Sidecar shared secret — REQUIRED; clients send it as X-Secret-Key. If
+      # empty, first start generates one, prints it, and saves it in the
+      # omp-data volume (server-secret.txt). Set OMP_SECRET_KEY (gateway side)
+      # to the SAME value in .env.
+      - OMP_SIDECAR_SECRET_KEY=${OMP_SIDECAR_SECRET_KEY:-}
+      # The container ALWAYS listens on 3310 — OMP_PORT from .env is the
+      # published HOST port (port-offset convention, cf. CONTAINER_PORT vs
+      # GATEWAY_PORT for the gateway), so override the env_file passthrough
+      # here to keep the host:container ports decoupled.
+      - OMP_PORT=3310
+      # Default model/thinking for spawned sessions ("provider/modelId" or an
+      # omp role); per-agent metadata (omp_model / omp_thinking) overrides
+      # these. The OMP_SIDE_* namespace avoids omp's own OMP_* env names.
+      - OMP_SIDE_MODEL=${OMP_SIDE_MODEL:-}
+      - OMP_SIDE_THINKING=${OMP_SIDE_THINKING:-}
+      # Comma-separated tool list passed to the spawned omp process.
+      - OMP_SIDE_TOOLS=${OMP_SIDE_TOOLS:-}
+      # Extra omp CLI flags for every session.
+      - OMP_SIDE_EXTRA_ARGS=${OMP_SIDE_EXTRA_ARGS:-}
+      # omp's native tool-approval mode: always-ask (default — the bridge
+      # answers the dialog per omp_permission_mode) | always-ask-cached |
+      # write | yolo (no dialogs at all, so omp_permission_mode has no effect).
+      - OMP_SIDE_APPROVAL_MODE=${OMP_SIDE_APPROVAL_MODE:-always-ask}
+      # 1 (default) skips the language-server startup in the container.
+      - OMP_SIDE_NO_LSP=${OMP_SIDE_NO_LSP:-1}
+      # Optional spend cap for a spawned session, in USD.
+      - OMP_SIDE_MAX_COST=${OMP_SIDE_MAX_COST:-}
+      # First-start compatible-endpoint config: writes /root/.omp/agent/
+      # models.yml targeting OMP_COMPAT_BASE_URL (default: the shared
+      # OPENAI_COMPAT_* endpoint). models.yml reads the apiKey as the NAME
+      # of an environment variable (omp docs models.md), so the key itself
+      # never lands in the file.
+      - OMP_COMPAT_BASE_URL=${OMP_COMPAT_BASE_URL:-${OPENAI_COMPAT_BASE_URL:-}}
+      - OMP_COMPAT_API_KEY=${OMP_COMPAT_API_KEY:-${OPENAI_COMPAT_API_KEY:-}}
+      - OMP_COMPAT_MODEL=${OMP_COMPAT_MODEL:-${OPENAI_COMPAT_MODEL:-}}
+      # Provider credentials read directly by omp (add more via .env and pass
+      # them here the same way).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_COMPAT_API_KEY:-${OPENAI_API_KEY:-}}
+      - OPENAI_BASE_URL=${OPENAI_COMPAT_BASE_URL:-${OPENAI_BASE_URL:-}}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    restart: unless-stopped
+    healthcheck:
+      # GET /health must return {"status":"ok","dialect":"omp",...} with the
+      # shared secret (the same env-aware script as the pi sibling).
+      test: ["CMD", "/usr/local/bin/pi-healthcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
 
 # A single default bridge network lets the gateway reach the `hermes` /
-# `openclaw` / `goose` services by name (http://hermes:8642,
-# http://openclaw:18789, http://goose:3284) when their respective profiles
-# are active.
+# `openclaw` / `goose` / `pi` / `omp` services by name (http://hermes:8642,
+# http://openclaw:18789, http://goose:3284, http://pi:3300, http://omp:3310)
+# when their respective profiles are active.
 
 volumes:
   # OpenClaw config/agents/sessions (see the openclaw service's volumes).
@@ -505,3 +611,7 @@ volumes:
   # pi user config dir (settings.json, models.json).
   pi-data:
   pi-agent:
+  # omp sibling: sidecar state (secret, session files, resume index) and the
+  # omp user config dir (models.yml).
+  omp-data:
+  omp-agent:

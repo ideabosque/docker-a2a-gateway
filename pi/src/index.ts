@@ -1,52 +1,80 @@
 /**
- * index.ts — pi sidecar entry point.
+ * index.ts — sidecar entry point (pi or omp dialect).
  *
- * Environment (all optional; see pi/README.md and .env.example in
- * docker-a2a-gateway):
- *   PI_PORT                 HTTP port (default 3300)
- *   PI_SIDECAR_SECRET_KEY   shared secret (X-Secret-Key). If empty at first
- *                           start one is generated, printed once, and saved
- *                           to $PI_DATA_DIR/server-secret.txt (like goose).
- *   PI_DATA_DIR             sidecar state dir (default /data)
- *   PI_SESSION_DIR          pi --session-dir (default $PI_DATA_DIR/sessions)
- *   PI_CWD                  default agent cwd (default /workspace)
- *   PI_SIDE_MODEL           provider/modelId default (e.g. anthropic/...)
- *   PI_SIDE_THINKING        default thinking level (off … max)
- *   PI_SIDE_PROVIDER        explicit provider (overrides PI_SIDE_MODEL prefix)
- *   PI_SIDE_MODEL_ID        explicit model id (overrides PI_SIDE_MODEL suffix)
- *   PI_SIDE_TOOLS           comma list passed as pi --tools
- *   PI_SIDE_EXTRA_ARGS      extra pi CLI flags (space-split, unquoted)
- *   PI_SIDE_APPROVE         1 → allow project-trust gating (default 0 = --no-approve)
- *   PI_SIDE_OFFLINE         1 → --offline
- *   PI_SIDE_NO_EXTENSIONS   1 → --no-extensions
+ * The sidecar drives one agent dialect, selected with AGENT_DIALECT ("pi" by
+ * default, "omp" for oh-my-pi). Every setting below is read from the
+ * dialect's env namespace — PI_* for pi, OMP_* for omp — so the two
+ * siblings share one implementation and one env contract:
+ *
+ *   ${P}_PORT                 HTTP port (pi 3300 / omp 3310)
+ *   ${P}_SIDECAR_SECRET_KEY   shared secret (X-Secret-Key). If empty at first
+ *                             start one is generated, printed once, and saved
+ *                             to $${P}_DATA_DIR/server-secret.txt (like goose).
+ *   ${P}_DATA_DIR             sidecar state dir (default /data)
+ *   ${P}_SESSION_DIR          agent --session-dir (default $${P}_DATA_DIR/sessions)
+ *   ${P}_CWD                  default agent cwd (default /workspace)
+ *   ${P}_SIDE_MODEL           default model (pi: provider/modelId, omp: the
+ *                             whole spec — provider/modelId or a role)
+ *   ${P}_SIDE_THINKING        default thinking level (off … max)
+ *   ${P}_SIDE_TOOLS           comma list passed as --tools
+ *   ${P}_SIDE_EXTRA_ARGS      extra agent CLI flags (space-split, unquoted)
+ *   ${P}_LOG_EVENTS           1 → log every session event
+ *   ${P}_MAX_PROCESSES        live process cap (default 8)
+ *   ${P}_IDLE_TIMEOUT_S       idle process reaping (default 1800; 0 disables)
+ *   ${P}_STREAM_TIMEOUT_S     per-run stream timeout (default 300; 0 disables)
+ *   ${P}_MAX_BODY_BYTES       request body cap (default 262144000 ≈ 250 MB)
+ *   ${P}_BIN                  agent binary (default: the dialect's own)
+ *
+ * pi-only (unchanged): ${P}_SIDE_PROVIDER, ${P}_SIDE_MODEL_ID,
+ * ${P}_SIDE_APPROVE, ${P}_SIDE_OFFLINE, ${P}_SIDE_NO_EXTENSIONS.
+ * omp-only: ${P}_SIDE_APPROVAL_MODE (default always-ask), ${P}_SIDE_NO_LSP
+ * (default 1 → --no-lsp), ${P}_SIDE_MAX_COST (optional → --max-cost <usd>).
+ *
+ * AGENT_BIN overrides the agent binary for both dialects; AGENT_DIALECT
+ * selects the dialect and fails fast on an unknown value.
  *
  * P1 SPIKE FINDING (2026-10-25): pi itself EXPORTS `PI_PROVIDER` / `PI_MODEL`
  * into the shells of its own tool runs (pi docs environment-variables.md) —
  * and on dev machines those very names are often already in the environment.
  * The sidecar's spawn defaults therefore use the PI_SIDE_* namespace, and the
  * pi child env strips PI_MODEL/PI_PROVIDER/PI_THINKING/PI_TOOLS entirely (see
- * pool.spawnEnv) so a host value can never masquerade as sidecar config
+ * pool.spawnEnvClean) so a host value can never masquerade as sidecar config
  * (verified: host PI_PROVIDER=ollama-cloud made resumed sessions boot-fail
  * with `Unknown provider "ollama-cloud"`).
- *   PI_MAX_PROCESSES        live process cap (default 8)
- *   PI_IDLE_TIMEOUT_S       idle process reaping (default 1800; 0 disables)
- *   PI_STREAM_TIMEOUT_S     per-run stream timeout (default 300; 0 disables)
- *   PI_MAX_BODY_BYTES       request body cap (default 262144000 ≈ 250 MB)
  */
 
 import { execFile } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { createDialect, type AgentDialect } from "./dialect.js";
 import { createServer } from "./server.js";
 import { SessionPool, parseModelSpec } from "./pool.js";
 
 const execFileAsync = promisify(execFile);
 
+// A misconfigured sidecar must fail at startup, never speak the wrong
+// protocol.
+const dialect: AgentDialect = (() => {
+	const name = (process.env.AGENT_DIALECT ?? "pi").trim() || "pi";
+	try {
+		return createDialect(name);
+	} catch (err) {
+		console.error(
+			`[sidecar] fatal: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		process.exit(1);
+	}
+})();
+
+/** Env namespace of the running dialect: PI_* or OMP_*. */
+const P = dialect.envPrefix;
+
 const log = (level: "info" | "warn" | "error", message: string): void => {
-	const line = `[pi-sidecar] ${message}`;
+	const line = `[${dialect.name}-sidecar] ${message}`;
 	if (level === "error") console.error(line);
 	else console.log(line);
 };
@@ -68,31 +96,33 @@ const boolEnv = (name: string, fallback = false): boolean => {
 	return v === "1" || v === "true" || v === "yes" || v === "on";
 };
 
-const DATA_DIR = process.env.PI_DATA_DIR || "/data";
-const SESSION_DIR = process.env.PI_SESSION_DIR || path.join(DATA_DIR, "sessions");
-const WORKSPACE = process.env.PI_CWD || "/workspace";
-const PORT = intEnv("PI_PORT", 3300);
-const MAX_PROCESSES = intEnv("PI_MAX_PROCESSES", 8);
-const IDLE_TIMEOUT_MS = intEnv("PI_IDLE_TIMEOUT_S", 1800) * 1000;
-const STREAM_TIMEOUT_MS = intEnv("PI_STREAM_TIMEOUT_S", 300) * 1000;
-const MAX_BODY_BYTES = intEnv("PI_MAX_BODY_BYTES", 262_144_000);
+/** Read a setting from the dialect's env namespace. */
+const env = (name: string): string | undefined => process.env[`${P}_${name}`];
 
-const piVersion = async (): Promise<string> => {
+const DATA_DIR = env("DATA_DIR") || "/data";
+const SESSION_DIR = env("SESSION_DIR") || path.join(DATA_DIR, "sessions");
+const WORKSPACE = env("CWD") || "/workspace";
+const PORT = intEnv(`${P}_PORT`, dialect.defaultPort);
+const MAX_PROCESSES = intEnv(`${P}_MAX_PROCESSES`, 8);
+const IDLE_TIMEOUT_MS = intEnv(`${P}_IDLE_TIMEOUT_S`, 1800) * 1000;
+const STREAM_TIMEOUT_MS = intEnv(`${P}_STREAM_TIMEOUT_S`, 300) * 1000;
+const MAX_BODY_BYTES = intEnv(`${P}_MAX_BODY_BYTES`, 262_144_000);
+
+// The agent binary: AGENT_BIN wins over the dialect's own name.
+const BIN = process.env.AGENT_BIN || env("BIN") || dialect.defaultBin;
+
+const agentVersion = async (): Promise<string> => {
 	try {
-		const bin = process.env.PI_BIN || "pi";
-		const { stdout } = await execFileAsync(bin, ["--version"], { timeout: 15_000 });
+		const { stdout } = await execFileAsync(BIN, ["--version"], { timeout: 15_000 });
 		return stdout.trim() || "unknown";
 	} catch (err) {
-		log(
-			"warn",
-			`could not read pi --version (PI_BIN=${process.env.PI_BIN || "pi"}): ${err}`,
-		);
+		log("warn", `could not read ${BIN} --version: ${err}`);
 		return "unknown";
 	}
 };
 
 const resolveSecret = async (): Promise<string> => {
-	const fromEnv = (process.env.PI_SIDECAR_SECRET_KEY ?? "").trim();
+	const fromEnv = (env("SIDECAR_SECRET_KEY") ?? "").trim();
 	const secretFile = path.join(DATA_DIR, "server-secret.txt");
 	if (fromEnv) {
 		if (!existsSync(secretFile)) {
@@ -107,36 +137,51 @@ const resolveSecret = async (): Promise<string> => {
 			return saved;
 		}
 	}
-	const secret = (await import("node:crypto")).randomBytes(32).toString("hex");
+	const secret = randomBytes(32).toString("hex");
 	await writeFile(secretFile, secret + "\n", { mode: 0o600 });
 	log("info", "generated a new sidecar secret (first start)");
 	log(
 		"info",
-		`copy it into .env as PI_SIDECAR_SECRET_KEY (and PI_SECRET_KEY) — ` +
-			`recovery: docker exec <pi-container> cat ${secretFile}`,
+		`copy it into .env as ${P}_SIDECAR_SECRET_KEY (and ${P}_SECRET_KEY) — ` +
+			`recovery: docker exec <${dialect.name}-container> cat ${secretFile}`,
 	);
 	return secret;
 };
 
-// Base pi command line shared by every spawned session. Provider credentials
-// are inherited from the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...);
-// model selection uses PI_SIDE_MODEL / PI_SIDE_PROVIDER / PI_SIDE_MODEL_ID.
+// Base agent command line shared by every spawned session. Provider
+// credentials are inherited from the environment (ANTHROPIC_API_KEY,
+// OPENAI_API_KEY, ...); model selection uses the ${P}_SIDE_* namespace.
+//
+// The per-session flags (model / thinking) are added by the pool from the
+// dialect's spawnFlags(); the omp defaults ride there instead of here, so a
+// per-session model never duplicates the flag.
 const buildBaseArgs = (): string[] => {
-	// The pi binary must ride in position 0 — PiRpc spawns command[0] with
-	// the tail as arguments. Spawn defaults read the PI_SIDE_* namespace
-	// (never pi's own PI_MODEL/PI_PROVIDER output vars — see the header).
-	const args = [process.env.PI_BIN || "pi", "--mode", "rpc"];
-	const { provider, model } = parseModelSpec(process.env.PI_SIDE_MODEL);
-	const providerOverride = process.env.PI_SIDE_PROVIDER || provider;
-	const modelOverride = process.env.PI_SIDE_MODEL_ID || model;
-	if (providerOverride) args.push("--provider", providerOverride);
-	if (modelOverride) args.push("--model", modelOverride);
-	if (process.env.PI_SIDE_THINKING) args.push("--thinking", process.env.PI_SIDE_THINKING);
-	if (process.env.PI_SIDE_TOOLS) args.push("--tools", process.env.PI_SIDE_TOOLS);
-	if (!boolEnv("PI_SIDE_APPROVE")) args.push("--no-approve");
-	if (boolEnv("PI_SIDE_OFFLINE")) args.push("--offline");
-	if (boolEnv("PI_SIDE_NO_EXTENSIONS", false)) args.push("--no-extensions");
-	const extra = (process.env.PI_SIDE_EXTRA_ARGS ?? "").trim();
+	// The agent binary must ride in position 0 — PiRpc spawns command[0] with
+	// the tail as arguments.
+	const args = [BIN, "--mode", "rpc"];
+	if (dialect.name === "omp") {
+		const tools = (env("SIDE_TOOLS") ?? "").trim();
+		if (tools) args.push("--tools", tools);
+		args.push("--approval-mode", (env("SIDE_APPROVAL_MODE") ?? "").trim() || "always-ask");
+		if (boolEnv(`${P}_SIDE_NO_LSP`, true)) args.push("--no-lsp");
+		const maxCost = (env("SIDE_MAX_COST") ?? "").trim();
+		if (maxCost) args.push("--max-cost", maxCost);
+	} else {
+		// pi takes the provider and the model id as two flags.
+		const { provider, model } = parseModelSpec(env("SIDE_MODEL"));
+		const providerOverride = env("SIDE_PROVIDER") || provider;
+		const modelOverride = env("SIDE_MODEL_ID") || model;
+		if (providerOverride) args.push("--provider", providerOverride);
+		if (modelOverride) args.push("--model", modelOverride);
+		const thinking = env("SIDE_THINKING");
+		if (thinking) args.push("--thinking", thinking);
+		const tools = env("SIDE_TOOLS");
+		if (tools) args.push("--tools", tools);
+		if (!boolEnv(`${P}_SIDE_APPROVE`)) args.push("--no-approve");
+		if (boolEnv(`${P}_SIDE_OFFLINE`)) args.push("--offline");
+		if (boolEnv(`${P}_SIDE_NO_EXTENSIONS`, false)) args.push("--no-extensions");
+	}
+	const extra = (env("SIDE_EXTRA_ARGS") ?? "").trim();
 	if (extra) {
 		// Unquoted, shell-style word splitting (same contract as
 		// EXTRA_GOOSE_SERVE_ARGS in the goose sibling).
@@ -148,8 +193,8 @@ const buildBaseArgs = (): string[] => {
 const main = async (): Promise<void> => {
 	mkdirSync(SESSION_DIR, { recursive: true });
 	const secret = await resolveSecret();
-	const version = await piVersion();
-	log("info", `pi version: ${version}`);
+	const version = await agentVersion();
+	log("info", `${dialect.name} version: ${version}`);
 	log("info", `session dir: ${SESSION_DIR}`);
 
 	const pool = new SessionPool({
@@ -159,21 +204,31 @@ const main = async (): Promise<void> => {
 		maxProcesses: MAX_PROCESSES,
 		idleTimeoutMs: IDLE_TIMEOUT_MS,
 		defaultCwd: WORKSPACE,
+		dialect,
+		...(dialect.name === "omp"
+			? {
+					// omp takes the whole model spec in --model; the pool adds
+					// it per session so a per-session model never duplicates
+					// the flag.
+					defaultModel: (env("SIDE_MODEL") ?? "").trim() || undefined,
+					defaultThinking: (env("SIDE_THINKING") ?? "").trim() || undefined,
+				}
+			: {}),
 		logger: log,
 		onEvent: (_sessionId, event) => {
 			// Run-window events are subscribed per HTTP stream; events outside
 			// any window (e.g. session_info_changed) are logged at debug noise.
-			if (process.env.PI_LOG_EVENTS === "1") {
+			if (process.env[`${P}_LOG_EVENTS`] === "1") {
 				log("info", `event: ${JSON.stringify(event).slice(0, 200)}`);
 			}
 		},
 		onStderr: (sessionId, line) => {
-			if (line.trim()) log("info", `pi[${sessionId}] stderr: ${line.trimEnd()}`);
+			if (line.trim()) log("info", `${dialect.name}[${sessionId}] stderr: ${line.trimEnd()}`);
 		},
 		onExit: (sessionId, code, signal) => {
 			log(
 				"warn",
-				`pi process for ${sessionId} exited (code=${code} signal=${signal})`,
+				`${dialect.name} process for ${sessionId} exited (code=${code} signal=${signal})`,
 			);
 		},
 	});
@@ -186,10 +241,11 @@ const main = async (): Promise<void> => {
 		streamTimeoutMs: STREAM_TIMEOUT_MS,
 		maxBodyBytes: MAX_BODY_BYTES,
 		log,
+		dialect,
 	});
 
 	server.listen(PORT, "0.0.0.0", () => {
-		log("info", `pi sidecar listening on 0.0.0.0:${PORT}`);
+		log("info", `${dialect.name} sidecar listening on 0.0.0.0:${PORT}`);
 	});
 
 	const shutdown = async (): Promise<void> => {

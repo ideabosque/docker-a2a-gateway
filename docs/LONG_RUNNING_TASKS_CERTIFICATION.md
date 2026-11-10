@@ -56,8 +56,8 @@ source is what the live stack exercised.
 
 | # | Finding | Evidence | Status |
 |---|---|---|---|
-| F1 | **Cancellation is reported but not confirmed.** `tasks/cancel` returned `TASK_STATE_CANCELED`, yet the backend run completed: the original `message/send` returned "`sleep 20` completed … wall time 20.11s". Root cause: the SDK calls `agent_executor.cancel(context, event_queue)` and the plugin implemented `cancel(task_id)`; the SDK swallowed the `TypeError`, so the backend stop never ran. | live probe | **fixed** in this branch (SDK contract) |
-| F2 | **A late completion resurrects a cancelled task.** After the cancel, `tasks/get` showed `TASK_STATE_COMPLETED` with the tool output — the cancelled terminal decision was overwritten. | live probe | **open** — Phase 3 (terminal revision / fencing) |
+| F1 | **Cancellation was reported but not confirmed.** `tasks/cancel` returned `TASK_STATE_CANCELED`, yet the backend run completed: the original `message/send` returned "`sleep 20` completed … wall time 20.11s". Two causes: the SDK calls `agent_executor.cancel(context, event_queue)` while the plugin implemented `cancel(task_id)` (the SDK swallowed the `TypeError`, so the backend stop never ran); and a cancellation that arrived while the backend was still starting found no registered run, so the stop request was lost. | live probe | **fixed** in this branch: the SDK contract, the tenant-correct task-store context, and a remembered cancellation that stops the run as soon as it registers. Live: the bridge now answers "Request canceled." and the omp/goose cancel scenarios pass |
+| F2 | **A late completion resurrected a cancelled task.** After the cancel, `tasks/get` showed `TASK_STATE_COMPLETED` with the tool output. With F1 fixed the run is actually stopped, so the late completion no longer arrives (the live cancel scenario's "cancelled terminal state not overwritten" check passes). The general case is still unguarded: a backend that completes BEFORE the cancel is processed still overwrites the terminal decision. | live probe | **symptom gone** (the run is stopped); the terminal-revision guard itself is **open** — Phase 3 |
 | F3 | **`configuration.returnImmediately` is a no-op.** The request blocked 13.00 s and returned a direct Message (`ROLE_AGENT`, `parts`, `contextId`) — no Task, no task id. The flag only applies when the reply is a Task; the plugin always takes the legacy direct-Message profile. | live probe | **open** — Phase 2 item 4 |
 | F4 | **SSE frames carried no `id:` field**, so a browser `EventSource` could not resume automatically; the cursor existed only inside the JSON payload. | live probe | **fixed** in this branch |
 | F5 | **Replay was partition-scoped, not recipient-scoped.** The shared daemon's history entries without a `partition_key` are returned to *every* partition (`silvaengine_daemon/sse.py`: `msg.get("partition_key") in (None, partition_key)`). The A2A plugin's SSE path does pass the partition (`a2a_protocol_plugin/main.py:551` → `send_to_user(..., partition_key=partition_key)`), so the window is narrow — but the daemon's `send_to_client` / `broadcast_message` paths, and any call with an empty partition, still append partition-less entries that any partition can replay. | source + live probe | **mitigated** in the gateway (partition-scoped replay); **recipient-level** isolation remains **open** — it belongs to `silvaengine_daemon` |
@@ -99,10 +99,10 @@ exist yet.
 | T16 | Crash around backend acceptance | OPEN | no idempotency/ambiguity handling |
 | T17 | Completion commit then publisher crash | OPEN | no outbox |
 | T18 | Worker lease expires | OPEN | no leases |
-| T19 | User cancel before and during execution | COVERED | real SDK cancellation regression + the live distinction requested/confirmed |
-| T20 | Unsupported / rejected remote stop | PARTIAL | the live scenario reports the backend-stop outcome separately; OpenClaw-style local-only stop is not claimed as a remote stop |
+| T19 | User cancel before and during execution | COVERED | the real SDK cancellation regression plus the live scenario: the backend is asked to stop, the bridge answers "Request canceled.", the persisted state stays cancelled (omp and goose) |
+| T20 | Unsupported / rejected remote stop | PARTIAL | the live scenario reports the backend-stop outcome separately (requested / confirmed / not confirmed); a backend that cannot be stopped is recorded as "requested, not confirmed" and still cancels the task |
 | T21 | Deadline during continuous output | OPEN | no execution deadline (Phase 3) |
-| T22 | Race: cancel, timeout and completion | **OPEN** | F2 — a late completion currently overwrites the cancelled state |
+| T22 | Race: cancel, timeout and completion | PARTIAL | the cancellation now stops the run, so no late completion arrives (live: the cancelled state persists). A backend that completes before the cancel is processed still overwrites the terminal decision — the terminal-revision guard is open (Phase 3) |
 | T23 | Queue backlog / exhausted worker pool | OPEN | no queue |
 | T24 | Approval / auth interruption | COVERED | measured end-to-end through the gateway |
 | T25 | Cross-process gateway / worker | OPEN | single worker, in-memory SSE history |
@@ -149,7 +149,6 @@ python scripts/run_long_running_tests.py --suite live --bridge omp
 ## 7. Known pre-existing failures (not caused by this work)
 
 | Suite | Failure | Why |
-|---|---|---|
 | `a2a_protocol_plugin/tests/test_jwt_validation.py` | 11 failures | pre-existing on pristine `origin/main` (verified in a clean worktree) |
 | `a2a_protocol_plugin/tests/test_postgresql_backend.py` | 13 errors | needs a PostgreSQL on `localhost:5432` |
 | `docker-a2a-gateway/tests/unit/test_banyanos_{reasoning,client_regressions}.py` | collection error | `a2a_protocol_plugin` is only installed inside the image; use the `PYTHONPATH` above |
@@ -161,7 +160,7 @@ python scripts/run_long_running_tests.py --suite live --bridge omp
 |---|---|
 | Durable acceptance, dispatch, leases, outbox (Phases 2–3) | `a2a_protocol_plugin` + `silvaengine_daemon` |
 | Recipient-scoped SSE history and replay (F5) | `silvaengine_daemon` (`silvaengine_daemon/sse.py`) |
-| Terminal-revision fencing so a late completion cannot resurrect a cancelled task (F2) | `a2a_protocol_plugin` (Phase 3) |
+| Terminal-revision fencing: a completion that arrives after a cancel must not overwrite the terminal decision (F2's general case) | `a2a_protocol_plugin` (Phase 3) |
 | Explicit immediate-return mode (F3) | `a2a_protocol_plugin` (Phase 2 item 4) |
 | Execution deadlines, cancellation budgets (T21/T22) | `a2a_protocol_plugin` (Phase 3) |
 | Cross-process delivery, shared SSE backends (T25) | `silvaengine_daemon` + deployment |

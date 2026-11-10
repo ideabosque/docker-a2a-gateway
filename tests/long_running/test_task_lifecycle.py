@@ -860,7 +860,14 @@ def scenario_cancel(cfg: Dict[str, Any], bridge: str, response_mode: str,
     scenario.correlation["late_output_digest"] = digest(late_text)
     scenario.correlation["state_after_cancel"] = after_state
 
-    if late_text:
+    # The bridge reports a stopped run with its cancellation marker (the
+    # plugin's "Request canceled." content) - that IS the evidence that the
+    # backend was stopped. Any other text is the run's own answer, i.e. it
+    # kept running after the cancel request.
+    cancelled_text = late_text.strip().lower().startswith(
+        ("request canceled", "request cancelled")
+    )
+    if late_text and not cancelled_text:
         # The backend run answered AFTER the cancel request: it was never
         # stopped, whatever the persisted terminal state says.
         scenario.correlation["backend_stop_outcome"] = (
@@ -874,10 +881,16 @@ def scenario_cancel(cfg: Dict[str, Any], bridge: str, response_mode: str,
                if after_state else ""),
         )
         scenario.note(
-            "unimplemented requirement: the plugin's executor.cancel(task_id) does "
-            "not match the SDK contract cancel(context, event_queue), so the SDK "
-            "swallows the TypeError and the backend run is never stopped; the "
-            "client sees CANCELED while the backend keeps running",
+            "the backend run completed after the cancel request: the "
+            "cancellation did not reach the running work",
+        )
+    elif cancelled_text:
+        scenario.correlation["backend_stop_outcome"] = (
+            "confirmed (the bridge reported the cancellation and the run "
+            "produced no completion output)")
+        scenario.ok(
+            "backend stop confirmed",
+            f"the backend run was stopped ({late_text.strip()[:60]!r})",
         )
     elif after_state == cancel_state:
         scenario.correlation["backend_stop_outcome"] = (

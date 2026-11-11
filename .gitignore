@@ -16,6 +16,10 @@ data/*
 www/*
 postgres_data/*
 postgres_logs/*
+# Physical copies of the database directory kept locally as a safety net
+# before a pg_resetwal recovery (see backups/postgres/*.dump for the
+# logical dumps). Never committed - they are environment-specific and huge.
+postgres_data_pre_reset_*/
 backups/*
 !backups/.gitkeep
 !www/.gitkeep

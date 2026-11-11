@@ -24,6 +24,7 @@ postgres_logs/*
 postgres_data_*/
 backups/*
 !backups/.gitkeep
+!backups/README.md
 !www/.gitkeep
 !www/logs/.gitkeep
 !www/projects/.gitkeep

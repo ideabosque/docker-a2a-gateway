@@ -28,11 +28,14 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import sys
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import (Any, Callable, Dict, Iterable, Iterator, List, Optional,
+                    Set)
 
 import requests
 
@@ -749,11 +752,26 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
                          system_prompt: Optional[str] = None,
                          conversation_history: Optional[list] = None,
                          thread_uuid: Optional[str] = None,
-                         show_reasoning: Optional[bool] = None) -> Dict[str, Any]:
+                         show_reasoning: Optional[bool] = None,
+                         *,
+                         return_mode: str = "blocking") -> Dict[str, Any]:
     """Build params for A2A message/send.
 
     ``show_reasoning`` (when not None) is sent as ``metadata.show_reasoning``,
     the per-request override of the gateway's A2A_SHOW_REASONING (default on).
+
+    ``return_mode`` selects the client-visible response contract and is
+    independent of the transport streaming flag:
+
+      * ``"blocking"`` (default) - the gateway answers with the final
+        Message/Task; the params are byte-identical to the historic shape
+        (no ``configuration`` key at all).
+      * ``"immediate"`` (alias ``"async"``) - the params carry
+        ``configuration: {"returnImmediately": true}`` so the gateway
+        accepts the work and answers with a nonterminal Task carrying a
+        stable task id.
+
+    Any other value raises ``ValueError``.
     """
     metadata: Dict[str, Any] = {
         "operation": "task_execution",
@@ -769,10 +787,13 @@ def message_send_params(text: str, agent_uuid: str, task_id: str,
         metadata["thread_uuid"] = thread_uuid
     if show_reasoning is not None:
         metadata["show_reasoning"] = bool(show_reasoning)
-    return {
+    params: Dict[str, Any] = {
         "message": {"role": "ROLE_USER", "parts": [{"text": text}]},
         "metadata": metadata,
     }
+    if normalize_return_mode(return_mode) == RETURN_MODE_IMMEDIATE:
+        params["configuration"] = {"returnImmediately": True}
+    return params
 
 
 # ---------------------------------------------------------------------------
@@ -897,6 +918,695 @@ def jsonrpc_error(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return body.get("error") if isinstance(body, dict) else None
 
 
+# ---------------------------------------------------------------------------
+# Long-running task harness (docs/LONG_RUNNING_TASKS_TEST_PLAN.md)
+#
+# Additive helpers shared by the offline harness suite
+# (tests/unit/test_long_running_harness.py) and the live long-running
+# scenarios:
+#
+#   - explicit blocking / immediate (configuration.returnImmediately) modes
+#   - envelope validation (direct Message reply or A2A Task)
+#   - bounded tasks/get polling with a monotonic deadline
+#   - a real SSE parser (one HTTP chunk is never one event)
+#   - redaction and content-free metrics
+# ---------------------------------------------------------------------------
+
+RETURN_MODE_BLOCKING = "blocking"
+RETURN_MODE_IMMEDIATE = "immediate"
+RETURN_MODE_ASYNC = "async"
+RETURN_MODES = (RETURN_MODE_BLOCKING, RETURN_MODE_IMMEDIATE, RETURN_MODE_ASYNC)
+
+# Task states that will never change again - the poll loop stops on them.
+TERMINAL_TASK_STATES = frozenset({
+    "completed", "failed", "canceled", "rejected",
+})
+
+REDACTION_PLACEHOLDER = "***REDACTED***"
+
+# Keys that may carry a backend invocation correlation id.
+CORRELATION_ID_KEYS = (
+    "correlation_id", "correlationId",
+    "invocation_id", "invocationId",
+    "backend_invocation_id", "backendInvocationId",
+    "backend_correlation_id", "backendCorrelationId",
+    "request_id", "requestId",
+)
+
+_STATE_ALIASES = {
+    "cancelled": "canceled",
+    "cancel": "canceled",
+    "complete": "completed",
+    "failure": "failed",
+    "error": "failed",
+    "reject": "rejected",
+}
+
+
+def normalize_return_mode(return_mode: Any) -> str:
+    """Canonicalize a return mode to "blocking" or "immediate"."""
+    text = str(return_mode if return_mode is not None else "").strip().lower()
+    if text in ("", RETURN_MODE_BLOCKING, "sync", "wait"):
+        return RETURN_MODE_BLOCKING
+    if text in (RETURN_MODE_IMMEDIATE, RETURN_MODE_ASYNC,
+                "return_immediately", "returnimmediately"):
+        return RETURN_MODE_IMMEDIATE
+    raise ValueError(
+        f"unknown return_mode {return_mode!r} (expected one of {RETURN_MODES})")
+
+
+def normalize_task_state(state: Any) -> str:
+    """Normalize an A2A task state to a canonical lower-case name.
+
+    Accepts the protobuf enum names ("TASK_STATE_COMPLETED"), the plain
+    JSON names ("completed") and the usual spelling variants.
+    """
+    if state is None:
+        return ""
+    if isinstance(state, dict):
+        state = state.get("state") or state.get("status") or ""
+    text = str(state).strip().lower()
+    if not text:
+        return ""
+    if text.startswith("task_state_"):
+        text = text[len("task_state_"):]
+    return _STATE_ALIASES.get(text, text)
+
+
+def is_terminal_state(state: Any) -> bool:
+    """True when the task state can no longer change."""
+    return normalize_task_state(state) in TERMINAL_TASK_STATES
+
+
+class A2AEnvelopeError(Exception):
+    """Raised when a gateway response is not a usable A2A envelope."""
+
+
+@dataclass
+class TaskEnvelope:
+    """The public task data extracted from an A2A JSON-RPC response."""
+
+    task_id: str = ""
+    context_id: str = ""
+    state: str = ""
+    raw_state: str = ""
+    kind: str = ""
+    text: str = ""
+    result: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_terminal(self) -> bool:
+        return is_terminal_state(self.state)
+
+
+def _first_str(payload: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, int) and not isinstance(value, bool):
+            return str(value)
+    return ""
+
+
+def _parts_text(parts: Any) -> str:
+    chunks: List[str] = []
+    if not isinstance(parts, list):
+        return ""
+    for part in parts:
+        if isinstance(part, dict):
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                chunks.append(text)
+        elif isinstance(part, str) and part:
+            chunks.append(part)
+    return "".join(chunks)
+
+
+def extract_task_output(result: Dict[str, Any]) -> str:
+    """Extract the persisted answer text of a Task.
+
+    The artifacts are authoritative; the status message is only used when
+    the task carries no artifact text (it usually mirrors the last
+    artifact and would otherwise duplicate the answer).
+    """
+    if not isinstance(result, dict):
+        return ""
+    chunks: List[str] = []
+    artifacts = result.get("artifacts")
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if isinstance(artifact, str):
+                chunks.append(artifact)
+                continue
+            if not isinstance(artifact, dict):
+                continue
+            text = artifact.get("text")
+            if isinstance(text, str) and text:
+                chunks.append(text)
+            chunks.append(_parts_text(artifact.get("parts")))
+    output = "".join(chunks)
+    if output:
+        return output
+    status = result.get("status")
+    if isinstance(status, dict):
+        message = status.get("message")
+        if isinstance(message, dict):
+            return _parts_text(message.get("parts"))
+    return ""
+
+
+def _describe_jsonrpc_error(error: Any) -> str:
+    if isinstance(error, dict):
+        code = error.get("code")
+        message = error.get("message") or error.get("data") or ""
+        if code is not None and message:
+            return f"{code}: {message}"
+        if message:
+            return str(message)
+        return str(error)
+    return str(error)
+
+
+def _describe_graphql_errors(errors: Any) -> str:
+    if isinstance(errors, dict):
+        errors = [errors]
+    parts: List[str] = []
+    for item in errors or []:
+        if isinstance(item, dict):
+            parts.append(str(item.get("message") or item))
+        else:
+            parts.append(str(item))
+    return "; ".join(parts) or "unknown GraphQL error"
+
+
+def decode_jsonrpc_response(resp: Any, *,
+                             require_http_ok: bool = True) -> Dict[str, Any]:
+    """Decode a JSON-RPC response body, raising on HTTP and shape errors."""
+    status = int(getattr(resp, "status_code", 200) or 200)
+    body = unwrap_response(resp)
+    if require_http_ok and status >= 400:
+        detail = ""
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict):
+                detail = f": {error.get('message') or error.get('code') or ''}"
+            elif isinstance(error, str):
+                detail = f": {error}"
+        raise A2AEnvelopeError(f"HTTP {status} from the A2A gateway{detail}")
+    if not isinstance(body, dict):
+        raise A2AEnvelopeError(
+            "malformed JSON-RPC envelope: expected an object, got "
+            f"{type(body).__name__}")
+    return body
+
+
+def parse_task_envelope(body: Any, *, require_task_id: bool = True,
+                        require_non_terminal: bool = False) -> TaskEnvelope:
+    """Validate a decoded JSON-RPC body and extract the public task data.
+
+    Accepts a direct A2A Message reply as well as an A2A Task. Raises
+    A2AEnvelopeError for a malformed envelope, a JSON-RPC error body, a
+    GraphQL error body, a missing task id and - when
+    ``require_non_terminal`` is set - an already terminal task.
+    """
+    if not isinstance(body, dict):
+        raise A2AEnvelopeError(
+            "malformed JSON-RPC envelope: expected an object, got "
+            f"{type(body).__name__}")
+    error = body.get("error")
+    if error is not None:
+        raise A2AEnvelopeError(
+            f"JSON-RPC error: {_describe_jsonrpc_error(error)}")
+    graphql_errors = body.get("errors")
+    if graphql_errors:
+        raise A2AEnvelopeError(
+            f"GraphQL error: {_describe_graphql_errors(graphql_errors)}")
+    if "result" not in body:
+        raise A2AEnvelopeError(
+            "malformed JSON-RPC envelope: missing 'result'")
+    result = body.get("result")
+    if not isinstance(result, dict):
+        raise A2AEnvelopeError(
+            "malformed JSON-RPC envelope: 'result' must be an object, got "
+            f"{type(result).__name__}")
+    status = result.get("status")
+    if isinstance(status, (dict, str)):
+        kind = "task"
+    elif "parts" in result or result.get("kind") == "message":
+        kind = "message"
+    else:
+        kind = "task"
+    if kind == "message":
+        task_id = _first_str(result, "taskId", "task_id")
+    else:
+        task_id = _first_str(result, "id", "taskId", "task_id")
+    context_id = _first_str(result, "contextId", "context_id")
+    raw_state = ""
+    if isinstance(status, dict):
+        raw_state = str(status.get("state") or status.get("status") or "")
+    elif isinstance(status, str):
+        raw_state = status
+    state = normalize_task_state(raw_state)
+    if kind == "task":
+        text = extract_task_output(result)
+    else:
+        text = _parts_text(result.get("parts"))
+    if require_task_id and not task_id:
+        raise A2AEnvelopeError("malformed A2A envelope: missing task id")
+    if require_non_terminal:
+        if kind != "task":
+            raise A2AEnvelopeError(
+                "expected an A2A Task, got a direct Message reply")
+        if is_terminal_state(state):
+            raise A2AEnvelopeError(
+                f"expected a nonterminal task, got terminal state {state!r}")
+    return TaskEnvelope(task_id=task_id, context_id=context_id, state=state,
+                        raw_state=raw_state, kind=kind, text=text,
+                        result=result)
+
+
+@dataclass
+class PollResult:
+    """The outcome of a bounded tasks/get poll loop."""
+
+    task_id: str = ""
+    context_id: str = ""
+    state: str = ""
+    output: str = ""
+    task: Dict[str, Any] = field(default_factory=dict)
+    polls: int = 0
+    elapsed: float = 0.0
+    timed_out: bool = False
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """True when the task reached a terminal state without an error."""
+        return bool(self.state) and is_terminal_state(self.state) \
+            and not self.error
+
+
+def poll_task(gateway_url: str, token: str, endpoint_id: str, part_id: str,
+              task_id: str, *, agent_uuid: str = "",
+              timeout: float = 60.0, interval: float = 1.0,
+              request_timeout: float = 15.0,
+              sleep: Callable[[float], None] = time.sleep,
+              clock: Callable[[], float] = time.monotonic,
+              terminal_states: Optional[Iterable[str]] = None) -> PollResult:
+    """Poll ``tasks/get`` until the task reaches a terminal state.
+
+    The overall deadline is monotonic (``clock``), the poll interval is
+    configurable and every request carries its own bounded timeout, so
+    the loop can never run away. The authoritative persisted output is
+    read from the task itself, never from the SSE stream.
+
+    A JSON-RPC / GraphQL error body is a permanent failure and raises
+    A2AEnvelopeError. Transport failures (connection loss, HTTP 5xx,
+    HTTP 429) are retried until the deadline; a permanent HTTP 4xx stops
+    the loop immediately and is reported in ``error``.
+    """
+    terminal = {normalize_task_state(state)
+                for state in (terminal_states or TERMINAL_TASK_STATES)}
+    terminal.discard("")
+    interval = float(interval)
+    if interval <= 0:
+        raise ValueError("poll interval must be > 0 seconds")
+    timeout = max(0.0, float(timeout))
+    max_polls = int(math.ceil(timeout / interval)) + 1
+    started = clock()
+    deadline = started + timeout
+    polls = 0
+    last_error = ""
+    state = ""
+    context_id = ""
+    task_payload: Dict[str, Any] = {}
+    while polls < max_polls:
+        polls += 1
+        params: Dict[str, Any] = {"id": task_id}
+        if agent_uuid:
+            params["metadata"] = {"agent_uuid": agent_uuid}
+        response = None
+        try:
+            response = send_a2a(
+                gateway_url, token, endpoint_id, part_id, "tasks/get", params,
+                request_id=f"poll-{task_id}-{polls}",
+                timeout=request_timeout,
+            )
+        except requests.RequestException as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+        if response is not None:
+            status_code = int(getattr(response, "status_code", 200) or 200)
+            if status_code >= 400:
+                last_error = f"HTTP {status_code} from tasks/get"
+                if status_code < 500 and status_code != 429:
+                    return PollResult(
+                        task_id=task_id, context_id=context_id, state=state,
+                        output=extract_task_output(task_payload),
+                        task=task_payload, polls=polls,
+                        elapsed=clock() - started, error=last_error)
+            else:
+                body = decode_jsonrpc_response(response)
+                envelope = parse_task_envelope(body, require_task_id=False)
+                task_payload = envelope.result
+                state = envelope.state
+                context_id = envelope.context_id
+                last_error = ""
+                if state in terminal:
+                    return PollResult(
+                        task_id=envelope.task_id or task_id,
+                        context_id=context_id, state=state,
+                        output=envelope.text, task=task_payload, polls=polls,
+                        elapsed=clock() - started)
+        now = clock()
+        if now >= deadline:
+            break
+        sleep(min(interval, deadline - now))
+    return PollResult(task_id=task_id, context_id=context_id, state=state,
+                      output=extract_task_output(task_payload),
+                      task=task_payload, polls=polls,
+                      elapsed=clock() - started, timed_out=True,
+                      error=last_error)
+
+
+# ---------------------------------------------------------------------------
+# SSE parsing
+# ---------------------------------------------------------------------------
+@dataclass
+class SSEEvent:
+    """One complete server-sent event."""
+
+    id: str = ""
+    event: str = ""
+    data: str = ""
+    raw: str = ""
+
+    def payload(self) -> Dict[str, Any]:
+        """The JSON payload of the frame (empty when it is not JSON)."""
+        if not self.data:
+            return {}
+        try:
+            value = json.loads(self.data)
+        except (TypeError, ValueError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def type(self) -> str:
+        """The gateway frame type (JSON "type", else the SSE event name)."""
+        payload = self.payload()
+        for key in ("type", "event"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        return self.event
+
+
+def is_heartbeat_event(event: SSEEvent) -> bool:
+    """True for a keep-alive frame (no data payload, or type "heartbeat")."""
+    if not event.data.strip():
+        return True
+    return event.type == "heartbeat"
+
+
+def _apply_sse_field(name: str, value: str, state: Dict[str, Any]) -> None:
+    if name == "data":
+        state["data"].append(value)
+    elif name == "event":
+        state["event"] = value
+    elif name == "id":
+        if "\x00" not in value:
+            state["id"] = value
+    # "retry" and unknown fields are ignored on purpose.
+
+
+def _parse_sse_chunks(chunks: Iterable[Any]) -> Iterator[SSEEvent]:
+    """Parse raw SSE chunks into complete events (buffered by block)."""
+    buffer = b""
+    state: Dict[str, Any] = {"data": [], "event": "", "id": "", "raw": []}
+
+    def _dispatch() -> Optional[SSEEvent]:
+        data_lines = state["data"]
+        if not (data_lines or state["event"] or state["id"]):
+            state["data"] = []
+            state["raw"] = []
+            return None
+        event = SSEEvent(
+            id=state["id"],
+            event=state["event"],
+            data="\n".join(data_lines),
+            raw="\n".join(state["raw"]),
+        )
+        state["data"] = []
+        state["event"] = ""
+        state["id"] = ""
+        state["raw"] = []
+        return event
+
+    for chunk in chunks or ():
+        if chunk is None:
+            continue
+        if isinstance(chunk, str):
+            chunk = chunk.encode("utf-8")
+        buffer += chunk
+        while True:
+            index = buffer.find(b"\n")
+            if index < 0:
+                break
+            line = buffer[:index]
+            buffer = buffer[index + 1:]
+            if line.endswith(b"\r"):
+                line = line[:-1]
+            text = line.decode("utf-8", "replace")
+            if text == "":
+                event = _dispatch()
+                if event is not None:
+                    yield event
+                continue
+            state["raw"].append(text)
+            if text.startswith(":"):
+                continue  # comment / keep-alive line
+            name, _, value = text.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            _apply_sse_field(name, value, state)
+    # EOF: flush a trailing partial line and the pending event.
+    if buffer:
+        text = buffer.decode("utf-8", "replace")
+        buffer = b""
+        if not text.startswith(":"):
+            state["raw"].append(text)
+            name, _, value = text.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+            _apply_sse_field(name, value, state)
+    event = _dispatch()
+    if event is not None:
+        yield event
+
+
+def sse_dedupe_key(event: SSEEvent) -> str:
+    """Deduplication key: the SSE id when present, else event + data."""
+    if event.id:
+        return f"id:{event.id}"
+    return f"data:{event.event}\x00{event.data}"
+
+
+def dedupe_sse_events(events: Iterable[SSEEvent], *,
+                      key: Optional[Callable[[SSEEvent], str]] = None
+                      ) -> Iterator[SSEEvent]:
+    """Drop repeated events (replayed frames) keeping the first occurrence."""
+    key_fn = key or sse_dedupe_key
+    seen: Set[str] = set()
+    for event in events:
+        marker = key_fn(event)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        yield event
+
+
+def iter_sse_events(chunks: Iterable[Any], *,
+                    dedupe: bool = False) -> Iterator[SSEEvent]:
+    """Parse raw SSE chunks into complete events.
+
+    The chunks are buffered until a blank-line boundary, so one HTTP
+    chunk is never assumed to be one event. Multi-line ``data:`` fields
+    are joined with newlines, ``id:`` is optional (the gateway adds it
+    in parallel) and the pending block is flushed at EOF.
+
+    ``SSEEvent.id`` is the id the frame itself carries - a frame without
+    an id never inherits the id of an earlier frame, so deduplication
+    cannot drop a frame. The reconnect cursor is the last non-empty id
+    of the stream, see ``last_event_id``.
+    """
+    events = _parse_sse_chunks(chunks)
+    if dedupe:
+        return dedupe_sse_events(events)
+    return events
+
+
+def last_event_id(events: Iterable[SSEEvent]) -> str:
+    """The last non-empty SSE event id (the reconnect cursor)."""
+    last = ""
+    for event in events:
+        if event.id:
+            last = event.id
+    return last
+
+
+def summarize_sse_events(events: Iterable[SSEEvent]) -> Dict[str, Any]:
+    """Summarize a stream: frame counts, terminal state and event ids."""
+    counts: Dict[str, int] = {}
+    event_ids: List[str] = []
+    task_ids: List[str] = []
+    terminal_state = ""
+    artifacts = 0
+    heartbeats = 0
+    for event in events:
+        etype = event.type or "message"
+        counts[etype] = counts.get(etype, 0) + 1
+        if event.id:
+            event_ids.append(event.id)
+        if is_heartbeat_event(event):
+            heartbeats += 1
+        payload = event.payload()
+        task_id = payload.get("task_id") or payload.get("taskId")
+        if task_id:
+            task_ids.append(str(task_id))
+        if etype in ("task_status", "status"):
+            state = normalize_task_state(
+                payload.get("state") or payload.get("status"))
+            if state:
+                terminal_state = state
+        if etype == "task_artifact":
+            artifacts += 1
+    return {
+        "counts": counts,
+        "event_ids": event_ids,
+        "task_ids": task_ids,
+        "terminal_state": terminal_state,
+        "artifacts": artifacts,
+        "heartbeats": heartbeats,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Redaction and content-free metrics
+# ---------------------------------------------------------------------------
+def redact(text: Any, secrets: Optional[Iterable[Any]] = None, *,
+           placeholder: str = REDACTION_PLACEHOLDER) -> str:
+    """Replace every occurrence of each secret with a placeholder."""
+    if text is None:
+        return ""
+    out = str(text)
+    for secret in (secrets or ()):
+        if secret is None:
+            continue
+        token = str(secret)
+        if not token:
+            continue
+        out = out.replace(token, placeholder)
+    return out
+
+
+def redact_structure(value: Any, secrets: Optional[Iterable[Any]] = None, *,
+                      placeholder: str = REDACTION_PLACEHOLDER) -> Any:
+    """Return a copy of a JSON-like structure with every secret redacted."""
+    if isinstance(value, dict):
+        return {key: redact_structure(item, secrets, placeholder=placeholder)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [redact_structure(item, secrets, placeholder=placeholder)
+                for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_structure(item, secrets, placeholder=placeholder)
+                     for item in value)
+    if isinstance(value, str):
+        return redact(value, secrets, placeholder=placeholder)
+    return value
+
+
+def extract_correlation_id(payload: Any, _depth: int = 0) -> str:
+    """Find a backend invocation correlation id in a result or event."""
+    if not isinstance(payload, dict) or _depth > 3:
+        return ""
+    for key in CORRELATION_ID_KEYS:
+        value = payload.get(key)
+        if isinstance(value, (str, int)) and str(value).strip():
+            return str(value).strip()
+    for nested in ("metadata", "task", "result", "status", "artifact"):
+        child = payload.get(nested)
+        if isinstance(child, dict):
+            found = extract_correlation_id(child, _depth + 1)
+            if found:
+                return found
+    return ""
+
+
+@dataclass
+class LongRunningMetrics:
+    """Timing and correlation metrics of a long-running task observation.
+
+    The metrics never hold bearer tokens, provider keys or answer
+    content - only the length of the final output.
+    """
+
+    submission_latency_ms: Optional[float] = None
+    acceptance_latency_ms: Optional[float] = None
+    first_artifact_ms: Optional[float] = None
+    terminal_ms: Optional[float] = None
+    event_ids: List[str] = field(default_factory=list)
+    output_length: int = 0
+    correlation_id: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "submission_latency_ms": self.submission_latency_ms,
+            "acceptance_latency_ms": self.acceptance_latency_ms,
+            "first_artifact_ms": self.first_artifact_ms,
+            "terminal_ms": self.terminal_ms,
+            "event_ids": list(self.event_ids),
+            "output_length": self.output_length,
+            "correlation_id": self.correlation_id,
+        }
+
+
+def build_long_running_metrics(*, submission_latency: Optional[float] = None,
+                                submitted_at: Optional[float] = None,
+                                accepted_at: Optional[float] = None,
+                                first_artifact_at: Optional[float] = None,
+                                terminal_at: Optional[float] = None,
+                                event_ids: Optional[Iterable[Any]] = None,
+                                output: Optional[str] = None,
+                                output_length: Optional[int] = None,
+                                correlation_id: str = "") -> LongRunningMetrics:
+    """Build the content-free metrics of a long-running task observation.
+
+    ``submission_latency`` is the duration of the submit request in
+    seconds; the other timestamps are points of the same monotonic clock
+    as ``submitted_at`` and are reported as offsets from it.
+    """
+    def _offset(mark: Optional[float]) -> Optional[float]:
+        if mark is None or submitted_at is None:
+            return None
+        return round((float(mark) - float(submitted_at)) * 1000.0, 3)
+
+    if output_length is None:
+        output_length = len(output) if isinstance(output, str) else 0
+    ids = [str(item) for item in (event_ids or ()) if item]
+    return LongRunningMetrics(
+        submission_latency_ms=(None if submission_latency is None
+                               else round(float(submission_latency) * 1000.0, 3)),
+        acceptance_latency_ms=_offset(accepted_at),
+        first_artifact_ms=_offset(first_artifact_at),
+        terminal_ms=_offset(terminal_at),
+        event_ids=ids,
+        output_length=int(output_length),
+        correlation_id=str(correlation_id or ""),
+    )
+
+
 __all__ = [
     "G", "R", "C", "Y", "B", "D", "RST",
     "PROJECT_DIR", "ENV_FILE",
@@ -907,4 +1617,16 @@ __all__ = [
     "a2a_headers", "send_a2a", "message_send_params",
     "unwrap_response", "extract_text", "extract_state", "jsonrpc_error",
     "is_reasoning_artifact", "StreamSections",
+    # Long-running task harness
+    "RETURN_MODE_BLOCKING", "RETURN_MODE_IMMEDIATE", "RETURN_MODE_ASYNC",
+    "RETURN_MODES", "TERMINAL_TASK_STATES", "REDACTION_PLACEHOLDER",
+    "CORRELATION_ID_KEYS",
+    "normalize_return_mode", "normalize_task_state", "is_terminal_state",
+    "A2AEnvelopeError", "TaskEnvelope", "decode_jsonrpc_response",
+    "parse_task_envelope", "extract_task_output",
+    "PollResult", "poll_task",
+    "SSEEvent", "iter_sse_events", "dedupe_sse_events", "sse_dedupe_key",
+    "is_heartbeat_event", "last_event_id", "summarize_sse_events",
+    "redact", "redact_structure", "extract_correlation_id",
+    "LongRunningMetrics", "build_long_running_metrics",
 ]

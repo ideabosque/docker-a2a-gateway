@@ -48,3 +48,5 @@ __pycache__/
 
 # Operator-owned composition of project deployments.
 /compose.projects.local.yaml
+# Local pointer to the postgres recovery override (machine-specific paths).
+/compose.*.local.yaml

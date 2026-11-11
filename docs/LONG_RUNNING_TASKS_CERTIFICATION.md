@@ -72,6 +72,7 @@ source is what the live stack exercised.
 | Durable output + `tasks/get` recovery | the persisted task carries the final message parts |
 | Approval (HITL) interruption | `task_permission` (`Allow tool: bash / Command: echo approval-probe`) + `INPUT_REQUIRED` → `approval_response` → `Approval granted for task …` → the run continued to completion |
 | Long-running task suite (live, per bridge) | omp / goose / pi -> **8 passed, 0 failed, 0 unmet** each: health, agent-card policy, submission, terminal observation via `tasks/get`, a stable second observation, disconnect/reconnect with recovery, the unknown-agent typed error, and a confirmed cancellation |
+| Banyanos bridge (long-running lifecycle) | the task never reaches a terminal state within 180 s, the completed task carries no output, and `tasks/cancel` is refused with -32002. Verified against the pre-change plugin as well, where the bridge fails even harder (7 scenarios) - these gaps are pre-existing, and this branch's fixes improved it (5 of 8 scenarios now pass). | owner: the plugin's banyanos agent path |
 | Existing bridge suites | omp **10/10**, goose **10/10**, pi **10/10** (`tests/<bridge>/test_gateway_live.py`) |
 
 ## 5. Scenario coverage

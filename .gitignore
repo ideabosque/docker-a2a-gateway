@@ -32,6 +32,8 @@ backups/*
 !www/openclaw/.gitkeep
 !www/pi-workspace/.gitkeep
 *.bak
+# Local copies of the deployment configuration (.env is gitignored).
+.env.bak_*
 __pycache__/
 *.pyc
 .pytest_cache/
